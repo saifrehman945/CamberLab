@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""
+Script: 04_run_cfd.py
+Stage:  4 — OpenFOAM case rendering and execution
+Purpose: Render the reusable OpenFOAM base case into each design directory and
+         optionally run the solver for cases that already contain a mesh.
+
+Usage:
+    micromamba run -n openfoam python scripts/04_run_cfd.py
+    micromamba run -n openfoam python scripts/04_run_cfd.py --case-id 0 1 2
+    micromamba run -n openfoam python scripts/04_run_cfd.py --run --jobs 4
+"""
+
+import argparse
+import json
+import logging
+import math
+import shlex
+import shutil
+import subprocess
+from pathlib import Path
+
+from jinja2 import Environment, FileSystemLoader
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s — %(message)s")
+log = logging.getLogger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CASES_DIR = PROJECT_ROOT / "cases"
+TEMPLATE_DIR = PROJECT_ROOT / "openfoam_template"
+OPENFOAM_BASHRC = Path("/opt/openfoam12/etc/bashrc")
+
+CHORD = 1.0
+MESH_SPAN = 0.05
+NU = 1.5e-5
+RHO = 1.225
+TURBULENCE_INTENSITY = 0.01
+TURBULENCE_LENGTH_SCALE = 0.07 * CHORD
+CMU = 0.09
+DEFAULT_JOBS = 4
+
+JINJA_ENV = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Render the OpenFOAM base case into cases/case_XXXX and optionally "
+            "run foamRun for cases that already contain constant/polyMesh."
+        )
+    )
+    parser.add_argument(
+        "--case-id",
+        type=int,
+        nargs="*",
+        help="Specific case IDs to process. Defaults to all cases with params.json.",
+    )
+    parser.add_argument(
+        "--run",
+        action="store_true",
+        help="Run foamRun after rendering for cases that already have a mesh.",
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=DEFAULT_JOBS,
+        help="GNU parallel job count when --run is enabled.",
+    )
+    return parser.parse_args()
+
+
+def fmt(value: float) -> str:
+    return f"{value:.10g}"
+
+
+def collect_case_dirs(case_ids: list[int] | None) -> list[Path]:
+    if case_ids:
+        case_dirs = [CASES_DIR / f"case_{case_id:04d}" for case_id in case_ids]
+    else:
+        case_dirs = sorted(
+            case_dir
+            for case_dir in CASES_DIR.glob("case_*")
+            if (case_dir / "params.json").exists()
+        )
+
+    missing = [case_dir for case_dir in case_dirs if not (case_dir / "params.json").exists()]
+    if missing:
+        missing_names = ", ".join(case_dir.name for case_dir in missing)
+        raise FileNotFoundError(f"Missing params.json for: {missing_names}")
+
+    return case_dirs
+
+
+def load_params(case_dir: Path) -> dict[str, float]:
+    payload = json.loads((case_dir / "params.json").read_text())
+    return {
+        "alpha_deg": float(payload["alpha_deg"]),
+        "Re": float(payload["Re"]),
+        "thickness": float(payload["thickness"]),
+    }
+
+
+def build_render_context(alpha_deg: float, reynolds_number: float) -> dict[str, str]:
+    alpha_rad = math.radians(alpha_deg)
+    u_inf = reynolds_number * NU / CHORD
+    ux = u_inf * math.cos(alpha_rad)
+    uy = u_inf * math.sin(alpha_rad)
+    lift_x = -math.sin(alpha_rad)
+    lift_y = math.cos(alpha_rad)
+    drag_x = math.cos(alpha_rad)
+    drag_y = math.sin(alpha_rad)
+
+    k_inf = max(1.5 * (u_inf * TURBULENCE_INTENSITY) ** 2, 1e-10)
+    omega_inf = max(
+        math.sqrt(k_inf) / (CMU ** 0.25 * TURBULENCE_LENGTH_SCALE),
+        1e-6,
+    )
+
+    return {
+        "UX": fmt(ux),
+        "UY": fmt(uy),
+        "UINF": fmt(u_inf),
+        "LIFTDIR_X": fmt(lift_x),
+        "LIFTDIR_Y": fmt(lift_y),
+        "DRAGDIR_X": fmt(drag_x),
+        "DRAGDIR_Y": fmt(drag_y),
+        "AREF": fmt(CHORD * MESH_SPAN),
+        "KINF": fmt(k_inf),
+        "OMEGAINF": fmt(omega_inf),
+        "RHO": fmt(RHO),
+    }
+
+
+def copy_static_template_files(case_dir: Path) -> None:
+    for source_path in TEMPLATE_DIR.rglob("*"):
+        relative_path = source_path.relative_to(TEMPLATE_DIR)
+        target_path = case_dir / relative_path
+
+        if source_path.is_dir():
+            target_path.mkdir(parents=True, exist_ok=True)
+            continue
+
+        if source_path.name.endswith(".template"):
+            continue
+
+        if source_path.suffix == ".md":
+            continue
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+
+
+def render_template_files(case_dir: Path, context: dict[str, str]) -> None:
+    for source_path in TEMPLATE_DIR.rglob("*.template"):
+        template_name = str(source_path.relative_to(TEMPLATE_DIR))
+        target_relative = template_name.removesuffix(".template")
+        target_path = case_dir / target_relative
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        rendered = JINJA_ENV.get_template(template_name).render(**context)
+        target_path.write_text(rendered.rstrip() + "\n")
+
+
+def render_case(case_dir: Path) -> None:
+    params = load_params(case_dir)
+    context = build_render_context(params["alpha_deg"], params["Re"])
+    copy_static_template_files(case_dir)
+    render_template_files(case_dir, context)
+
+    log.info(
+        "Rendered %s  alpha=%5.2f deg  Re=%.3e  t=%.4f  Uinf=%s m/s",
+        case_dir.name,
+        params["alpha_deg"],
+        params["Re"],
+        params["thickness"],
+        context["UINF"],
+    )
+
+
+def has_mesh(case_dir: Path) -> bool:
+    return (case_dir / "constant" / "polyMesh" / "boundary").exists()
+
+
+def run_case(case_dir: Path) -> None:
+    # Wall-resolved kOmegaSST diverges from a uniform U field on AR~10^3
+    # boundary-layer cells, so initialise U/p with potentialFlow first.
+    command = (
+        f"source {OPENFOAM_BASHRC} && "
+        f"potentialFoam -initialiseUBCs > log.potentialFoam 2>&1 && "
+        f"foamRun > log.simpleFoam 2>&1"
+    )
+    result = subprocess.run(
+        ["bash", "-lc", command],
+        cwd=case_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        log.error("foamRun failed in %s: %s", case_dir, result.stderr[-500:])
+        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+
+    log.info("Completed foamRun for %s", case_dir.name)
+
+
+def run_cases(case_dirs: list[Path], jobs: int) -> None:
+    if not case_dirs:
+        return
+
+    if len(case_dirs) == 1:
+        run_case(case_dirs[0])
+        return
+
+    if shutil.which("parallel") and jobs > 1:
+        case_list = " ".join(shlex.quote(str(case_dir)) for case_dir in case_dirs)
+        command = (
+            f'parallel -j {jobs} '
+            f'"cd {{1}} && source {OPENFOAM_BASHRC} && '
+            f'potentialFoam -initialiseUBCs > log.potentialFoam 2>&1 && '
+            f'foamRun > log.simpleFoam 2>&1" '
+            f"::: {case_list}"
+        )
+        result = subprocess.run(
+            ["bash", "-lc", command],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            log.error("GNU parallel foamRun failed: %s", result.stderr[-1000:])
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                result.args,
+                result.stdout,
+                result.stderr,
+            )
+
+        log.info("Completed foamRun for %d cases with GNU parallel (-j %d)", len(case_dirs), jobs)
+        return
+
+    if jobs > 1:
+        log.warning("GNU parallel not found; falling back to sequential execution")
+
+    for case_dir in case_dirs:
+        run_case(case_dir)
+
+
+def main() -> None:
+    args = parse_args()
+
+    if not TEMPLATE_DIR.exists():
+        raise FileNotFoundError(f"{TEMPLATE_DIR} not found")
+    if not OPENFOAM_BASHRC.exists():
+        raise FileNotFoundError(f"{OPENFOAM_BASHRC} not found")
+
+    case_dirs = collect_case_dirs(args.case_id)
+    if not case_dirs:
+        log.warning("No case directories with params.json were found under %s", CASES_DIR)
+        return
+
+    for case_dir in case_dirs:
+        render_case(case_dir)
+
+    if not args.run:
+        return
+
+    runnable_cases: list[Path] = []
+    for case_dir in case_dirs:
+        if has_mesh(case_dir):
+            runnable_cases.append(case_dir)
+        else:
+            log.warning("Skipping %s for execution: constant/polyMesh not found", case_dir.name)
+
+    if not runnable_cases:
+        log.warning("No rendered cases have a mesh yet; nothing was executed")
+        return
+
+    run_cases(runnable_cases, max(args.jobs, 1))
+
+
+if __name__ == "__main__":
+    main()

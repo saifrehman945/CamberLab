@@ -1,0 +1,49 @@
+# =========================================================================
+# AeroSurrogate — .gitignore
+#
+# Strategy: track the reproducibility kernel only.
+#   Tracked  → scripts/, openfoam_template/, samples.csv, train/test_idx.npy,
+#              validation/, environment.yml, README*.md, CLAUDE.md,
+#              (future) results/summary.csv, models/*.joblib
+#   Ignored  → cases/  (1.9 GB of meshes, fields, logs — regenerable from
+#              the tracked inputs above via scripts/02..04).
+# =========================================================================
+
+# --- Bulk CFD case data (kept locally, never committed) ------------------
+# Includes per-case meshes, polyMesh, time-step fields, postProcessing,
+# OpenFOAM logs, and validation cases. All regenerable from scripts/ +
+# openfoam_template/ + samples.csv.
+cases/
+
+# --- OpenFOAM stray artifacts (defensive, if any leak outside cases/) ----
+processor*/
+*.foam
+*.vtu
+*.vtk
+log.simpleFoam
+log.foamRun
+log.checkMesh
+log.gmshToFoam
+log.potentialFoam
+log.yPlus
+*.pre_harden
+
+# --- Python --------------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.ipynb_checkpoints/
+
+# --- Virtual environments / secrets --------------------------------------
+.env
+.venv/
+venv/
+
+# --- Editor / IDE --------------------------------------------------------
+*.swp
+*.swo
+
+# --- OS ------------------------------------------------------------------
+.DS_Store
+Thumbs.db
