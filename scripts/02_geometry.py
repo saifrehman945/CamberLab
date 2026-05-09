@@ -23,17 +23,17 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SAMPLES_PATH = PROJECT_ROOT / "samples.csv"
 CASES_DIR = PROJECT_ROOT / "cases"
 
-N_POINTS = 200
+N_POINTS = 321
 
 
 def naca_thickness(x: np.ndarray, t: float) -> np.ndarray:
-    """NACA 4-digit half-thickness distribution (open trailing edge)."""
+    """NACA 4-digit half-thickness distribution (closed trailing edge)."""
     return 5.0 * t * (
         0.2969 * np.sqrt(x)
         - 0.1260 * x
         - 0.3516 * x ** 2
         + 0.2843 * x ** 3
-        - 0.1015 * x ** 4
+        - 0.1036 * x ** 4
     )
 
 

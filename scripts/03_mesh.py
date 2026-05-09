@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import logging
 import re
@@ -49,8 +50,35 @@ SPANWISE_THICKNESS = 0.05 * CHORD
 
 BOUNDARY_LAYER_RATIO = 1.18
 FARFIELD_SIZE = 1.2
-WAKE_CORE_SIZE = 0.08
-WAKE_OUTER_SIZE = 0.2
+
+AIRFOIL_TE_SPLIT_X = 0.92
+AIRFOIL_LE_SPLIT_X = 0.08
+AIRFOIL_TE_NODES = 90
+AIRFOIL_MID_NODES = 150
+AIRFOIL_LE_NODES = 120
+TRAILING_EDGE_CAP_SCALE = 0.4
+TRAILING_EDGE_CAP_MIN = 1.0e-4
+TRAILING_EDGE_CAP_MAX = 5.0e-4
+
+AIRFOIL_REFINEMENT_SIZE = 0.0035
+AIRFOIL_REFINEMENT_DIST_MIN = 0.08
+AIRFOIL_REFINEMENT_DIST_MAX = 3.0
+
+SEPARATION_REFINEMENT_SIZE = 0.003
+SEPARATION_ZONE_XMIN = 0.7
+SEPARATION_ZONE_XMAX = 1.2
+SEPARATION_ZONE_YMIN = -0.15
+SEPARATION_ZONE_YMAX = 0.15
+
+WAKE_STATION_X = (1.01, 1.5, 4.0, 10.0, DOWNSTREAM_LENGTH)
+WAKE_HALF_HEIGHTS = (0.001, 0.02, 0.09, 0.3, 0.8)
+WAKE_CONNECTOR_NODES = 18
+WAKE_TRANSVERSE_NODES = 28
+WAKE_STREAMWISE_NODES = (110, 180, 220, 180)
+
+WAKE_NEAR_SIZE = 0.005
+WAKE_MID_SIZE = 0.012
+WAKE_FAR_SIZE = 0.03
 
 NON_ORTHOGONALITY_LIMIT = 70.0
 SKEWNESS_LIMIT = 4.0
@@ -105,6 +133,27 @@ runTimeModifiable true;
 
 // ************************************************************************* //
 """
+
+
+@dataclass(frozen=True)
+class AirfoilTopology:
+    loop_tag: int
+    curve_tags: list[int]
+    boundary_layer_curve_tags: list[int]
+    upper_curve_tags: list[int]
+    lower_curve_tags: list[int]
+    te_upper_point_tag: int
+    te_lower_point_tag: int
+    le_point_tag: int
+
+
+@dataclass(frozen=True)
+class SurfaceTopology:
+    fluid_surface_tags: list[int]
+    outer_curve_tags: list[int]
+    airfoil_curve_tags: list[int]
+    wake_surface_tag: int
+    embedded_curve_tags: list[int]
 
 
 def parse_args() -> argparse.Namespace:
@@ -214,20 +263,122 @@ def ensure_case_scaffold(case_dir: Path) -> None:
         control_dict_path.write_text(MINIMAL_CONTROL_DICT)
 
 
-def add_airfoil_loop(gmsh_module, coords: np.ndarray) -> tuple[int, list[int]]:
-    geo = gmsh_module.model.geo
-    point_tags = [geo.addPoint(float(x), float(y), 0.0, FARFIELD_SIZE) for x, y in coords]
+def sharpen_airfoil_trailing_edge(coords: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     leading_edge_index = int(np.argmin(coords[:, 0]))
+    upper_surface = np.array(coords[: leading_edge_index + 1], copy=True)
+    lower_surface = np.array(coords[leading_edge_index:], copy=True)
 
-    upper_curve = geo.addSpline(point_tags[: leading_edge_index + 1])
-    lower_curve = geo.addSpline(point_tags[leading_edge_index:])
-    trailing_edge_curve = geo.addLine(point_tags[-1], point_tags[0])
+    trailing_edge_x = 0.5 * float(upper_surface[0, 0] + lower_surface[-1, 0])
+    original_half_gap = 0.5 * abs(float(upper_surface[0, 1] - lower_surface[-1, 1]))
+    cap_half_height = np.clip(
+        TRAILING_EDGE_CAP_SCALE * original_half_gap,
+        TRAILING_EDGE_CAP_MIN,
+        TRAILING_EDGE_CAP_MAX,
+    )
 
-    airfoil_loop = geo.addCurveLoop([upper_curve, lower_curve, trailing_edge_curve])
-    return airfoil_loop, [upper_curve, lower_curve, trailing_edge_curve]
+    upper_surface[0] = np.array([trailing_edge_x, cap_half_height], dtype=np.float64)
+    lower_surface[-1] = np.array([trailing_edge_x, -cap_half_height], dtype=np.float64)
+
+    return upper_surface, lower_surface
 
 
-def add_c_domain_loop(gmsh_module) -> tuple[int, list[int]]:
+def segment_split_indices(surface_coords: np.ndarray, target_xs: tuple[float, ...]) -> list[int]:
+    interior_x = surface_coords[1:-1, 0]
+    if len(interior_x) < 4:
+        raise ValueError("Airfoil surface has too few points to segment for mesh control")
+
+    indices: list[int] = []
+    previous = 0
+
+    for offset, target_x in enumerate(target_xs):
+        candidate = 1 + int(np.argmin(np.abs(interior_x - target_x)))
+        candidate = max(candidate, previous + 2)
+
+        remaining = len(target_xs) - offset - 1
+        max_candidate = len(surface_coords) - 3 - 2 * remaining
+        candidate = min(candidate, max_candidate)
+
+        indices.append(candidate)
+        previous = candidate
+
+    return indices
+
+
+def add_curve_segments(geo, point_tags: list[int], split_indices: list[int]) -> list[int]:
+    bounds = [0, *split_indices, len(point_tags) - 1]
+    curve_tags: list[int] = []
+
+    for start, end in zip(bounds[:-1], bounds[1:]):
+        segment_points = point_tags[start : end + 1]
+        if len(segment_points) == 2:
+            curve_tags.append(geo.addLine(segment_points[0], segment_points[1]))
+        else:
+            curve_tags.append(geo.addSpline(segment_points))
+
+    return curve_tags
+
+
+def add_airfoil_loop(gmsh_module, coords: np.ndarray) -> AirfoilTopology:
+    geo = gmsh_module.model.geo
+    upper_surface, lower_surface = sharpen_airfoil_trailing_edge(coords)
+
+    te_upper_x, te_upper_y = upper_surface[0]
+    te_lower_x, te_lower_y = lower_surface[-1]
+    le_x, le_y = upper_surface[-1]
+    te_upper_point_tag = geo.addPoint(float(te_upper_x), float(te_upper_y), 0.0, FARFIELD_SIZE)
+    te_lower_point_tag = geo.addPoint(float(te_lower_x), float(te_lower_y), 0.0, FARFIELD_SIZE)
+    le_point_tag = geo.addPoint(float(le_x), float(le_y), 0.0, FARFIELD_SIZE)
+
+    upper_internal_tags = [
+        geo.addPoint(float(x), float(y), 0.0, FARFIELD_SIZE) for x, y in upper_surface[1:-1]
+    ]
+    lower_internal_tags = [
+        geo.addPoint(float(x), float(y), 0.0, FARFIELD_SIZE) for x, y in lower_surface[1:-1]
+    ]
+
+    upper_point_tags = [te_upper_point_tag, *upper_internal_tags, le_point_tag]
+    lower_point_tags = [le_point_tag, *lower_internal_tags, te_lower_point_tag]
+
+    upper_curve_tags = add_curve_segments(
+        geo,
+        upper_point_tags,
+        segment_split_indices(upper_surface, (AIRFOIL_TE_SPLIT_X, AIRFOIL_LE_SPLIT_X)),
+    )
+    lower_curve_tags = add_curve_segments(
+        geo,
+        lower_point_tags,
+        segment_split_indices(lower_surface, (AIRFOIL_LE_SPLIT_X, AIRFOIL_TE_SPLIT_X)),
+    )
+
+    for curve_tag, n_nodes in zip(
+        upper_curve_tags,
+        (AIRFOIL_TE_NODES, AIRFOIL_MID_NODES, AIRFOIL_LE_NODES),
+    ):
+        geo.mesh.setTransfiniteCurve(curve_tag, n_nodes)
+
+    for curve_tag, n_nodes in zip(
+        lower_curve_tags,
+        (AIRFOIL_LE_NODES, AIRFOIL_MID_NODES, AIRFOIL_TE_NODES),
+    ):
+        geo.mesh.setTransfiniteCurve(curve_tag, n_nodes)
+
+    trailing_edge_cap = geo.addLine(te_lower_point_tag, te_upper_point_tag)
+    geo.mesh.setTransfiniteCurve(trailing_edge_cap, WAKE_TRANSVERSE_NODES)
+
+    airfoil_loop = geo.addCurveLoop([*upper_curve_tags, *lower_curve_tags, trailing_edge_cap])
+    return AirfoilTopology(
+        loop_tag=airfoil_loop,
+        curve_tags=[*upper_curve_tags, *lower_curve_tags, trailing_edge_cap],
+        boundary_layer_curve_tags=[*upper_curve_tags, *lower_curve_tags],
+        upper_curve_tags=upper_curve_tags,
+        lower_curve_tags=lower_curve_tags,
+        te_upper_point_tag=te_upper_point_tag,
+        te_lower_point_tag=te_lower_point_tag,
+        le_point_tag=le_point_tag,
+    )
+
+
+def add_fluid_surfaces(gmsh_module, airfoil: AirfoilTopology) -> SurfaceTopology:
     geo = gmsh_module.model.geo
 
     center = geo.addPoint(0.0, 0.0, 0.0, FARFIELD_SIZE)
@@ -237,14 +388,101 @@ def add_c_domain_loop(gmsh_module) -> tuple[int, list[int]]:
     outlet_top = geo.addPoint(DOWNSTREAM_LENGTH, TRANSVERSE_EXTENT, 0.0, FARFIELD_SIZE)
     outlet_bottom = geo.addPoint(DOWNSTREAM_LENGTH, -TRANSVERSE_EXTENT, 0.0, FARFIELD_SIZE)
 
+    wake_upper_points: list[int] = []
+    wake_lower_points: list[int] = []
+    for x_station, half_height in zip(WAKE_STATION_X, WAKE_HALF_HEIGHTS):
+        wake_upper_points.append(geo.addPoint(float(x_station), float(half_height), 0.0, FARFIELD_SIZE))
+        wake_lower_points.append(geo.addPoint(float(x_station), float(-half_height), 0.0, FARFIELD_SIZE))
+
+    outlet_wake_upper = wake_upper_points[-1]
+    outlet_wake_lower = wake_lower_points[-1]
+
+    wake_upper_segments = [
+        geo.addLine(wake_upper_points[i], wake_upper_points[i + 1])
+        for i in range(len(wake_upper_points) - 1)
+    ]
+    wake_lower_segments = [
+        geo.addLine(wake_lower_points[i], wake_lower_points[i + 1])
+        for i in range(len(wake_lower_points) - 1)
+    ]
+    wake_cross_sections = [
+        geo.addLine(wake_upper_points[i], wake_lower_points[i]) for i in range(len(wake_upper_points))
+    ]
+    wake_connector_upper = geo.addLine(airfoil.te_upper_point_tag, wake_upper_points[0])
+    wake_connector_lower = geo.addLine(airfoil.te_lower_point_tag, wake_lower_points[0])
+
+    for curve_tag in wake_cross_sections:
+        geo.mesh.setTransfiniteCurve(curve_tag, WAKE_TRANSVERSE_NODES)
+
+    geo.mesh.setTransfiniteCurve(wake_connector_upper, WAKE_CONNECTOR_NODES)
+    geo.mesh.setTransfiniteCurve(wake_connector_lower, WAKE_CONNECTOR_NODES)
+
+    for curve_tag, n_nodes in zip(wake_upper_segments, WAKE_STREAMWISE_NODES):
+        geo.mesh.setTransfiniteCurve(curve_tag, n_nodes)
+    for curve_tag, n_nodes in zip(wake_lower_segments, WAKE_STREAMWISE_NODES):
+        geo.mesh.setTransfiniteCurve(curve_tag, n_nodes)
+
     top_curve = geo.addLine(top, outlet_top)
-    outlet_curve = geo.addLine(outlet_top, outlet_bottom)
+    outlet_upper = geo.addLine(outlet_top, outlet_wake_upper)
+    outlet_lower = geo.addLine(outlet_wake_lower, outlet_bottom)
     bottom_curve = geo.addLine(outlet_bottom, bottom)
     lower_arc = geo.addCircleArc(bottom, center, left)
     upper_arc = geo.addCircleArc(left, center, top)
+    leading_edge_connector = geo.addLine(airfoil.le_point_tag, left)
 
-    domain_loop = geo.addCurveLoop([top_curve, outlet_curve, bottom_curve, lower_arc, upper_arc])
-    return domain_loop, [top_curve, outlet_curve, bottom_curve, lower_arc, upper_arc]
+    wake_loop = geo.addCurveLoop(
+        [
+            wake_connector_upper,
+            *wake_upper_segments,
+            wake_cross_sections[-1],
+            *[-curve_tag for curve_tag in reversed(wake_lower_segments)],
+            -wake_connector_lower,
+            airfoil.curve_tags[-1],
+        ]
+    )
+    wake_surface = geo.addPlaneSurface([wake_loop])
+
+    upper_outer_loop = geo.addCurveLoop(
+        [
+            top_curve,
+            outlet_upper,
+            *[-curve_tag for curve_tag in reversed(wake_upper_segments)],
+            -wake_connector_upper,
+            *airfoil.upper_curve_tags,
+            leading_edge_connector,
+            upper_arc,
+        ]
+    )
+    lower_outer_loop = geo.addCurveLoop(
+        [
+            -leading_edge_connector,
+            *airfoil.lower_curve_tags,
+            wake_connector_lower,
+            *wake_lower_segments,
+            outlet_lower,
+            bottom_curve,
+            lower_arc,
+        ]
+    )
+
+    upper_outer_surface = geo.addPlaneSurface([upper_outer_loop])
+    lower_outer_surface = geo.addPlaneSurface([lower_outer_loop])
+
+    return SurfaceTopology(
+        fluid_surface_tags=[upper_outer_surface, lower_outer_surface, wake_surface],
+        outer_curve_tags=[
+            top_curve,
+            outlet_upper,
+            wake_cross_sections[-1],
+            outlet_lower,
+            bottom_curve,
+            lower_arc,
+            upper_arc,
+        ],
+        airfoil_curve_tags=airfoil.curve_tags,
+        wake_surface_tag=wake_surface,
+        embedded_curve_tags=wake_cross_sections[:-1],
+    )
 
 
 def classify_lateral_surfaces(
@@ -294,37 +532,61 @@ def configure_mesh_fields(
 
     distance_field = field.add("Distance")
     field.setNumbers(distance_field, "CurvesList", airfoil_curve_tags)
-    field.setNumber(distance_field, "Sampling", 300)
+    field.setNumber(distance_field, "Sampling", 1000)
 
     airfoil_threshold = field.add("Threshold")
     field.setNumber(airfoil_threshold, "InField", distance_field)
-    field.setNumber(airfoil_threshold, "SizeMin", 0.008)
+    field.setNumber(airfoil_threshold, "SizeMin", AIRFOIL_REFINEMENT_SIZE)
     field.setNumber(airfoil_threshold, "SizeMax", FARFIELD_SIZE)
-    field.setNumber(airfoil_threshold, "DistMin", 0.15)
-    field.setNumber(airfoil_threshold, "DistMax", 6.0)
+    field.setNumber(airfoil_threshold, "DistMin", AIRFOIL_REFINEMENT_DIST_MIN)
+    field.setNumber(airfoil_threshold, "DistMax", AIRFOIL_REFINEMENT_DIST_MAX)
 
-    wake_core = field.add("Box")
-    field.setNumber(wake_core, "VIn", WAKE_CORE_SIZE)
-    field.setNumber(wake_core, "VOut", FARFIELD_SIZE)
-    field.setNumber(wake_core, "XMin", 0.75)
-    field.setNumber(wake_core, "XMax", DOWNSTREAM_LENGTH)
-    field.setNumber(wake_core, "YMin", -1.0)
-    field.setNumber(wake_core, "YMax", 1.0)
-    field.setNumber(wake_core, "ZMin", -1.0)
-    field.setNumber(wake_core, "ZMax", 1.0)
+    separation_zone = field.add("Box")
+    field.setNumber(separation_zone, "VIn", SEPARATION_REFINEMENT_SIZE)
+    field.setNumber(separation_zone, "VOut", FARFIELD_SIZE)
+    field.setNumber(separation_zone, "XMin", SEPARATION_ZONE_XMIN)
+    field.setNumber(separation_zone, "XMax", SEPARATION_ZONE_XMAX)
+    field.setNumber(separation_zone, "YMin", SEPARATION_ZONE_YMIN)
+    field.setNumber(separation_zone, "YMax", SEPARATION_ZONE_YMAX)
+    field.setNumber(separation_zone, "ZMin", -1.0)
+    field.setNumber(separation_zone, "ZMax", 1.0)
 
-    wake_outer = field.add("Box")
-    field.setNumber(wake_outer, "VIn", WAKE_OUTER_SIZE)
-    field.setNumber(wake_outer, "VOut", FARFIELD_SIZE)
-    field.setNumber(wake_outer, "XMin", 0.5)
-    field.setNumber(wake_outer, "XMax", DOWNSTREAM_LENGTH)
-    field.setNumber(wake_outer, "YMin", -3.0)
-    field.setNumber(wake_outer, "YMax", 3.0)
-    field.setNumber(wake_outer, "ZMin", -1.0)
-    field.setNumber(wake_outer, "ZMax", 1.0)
+    wake_near = field.add("Box")
+    field.setNumber(wake_near, "VIn", WAKE_NEAR_SIZE)
+    field.setNumber(wake_near, "VOut", FARFIELD_SIZE)
+    field.setNumber(wake_near, "XMin", 1.0)
+    field.setNumber(wake_near, "XMax", 5.0)
+    field.setNumber(wake_near, "YMin", -0.15)
+    field.setNumber(wake_near, "YMax", 0.15)
+    field.setNumber(wake_near, "ZMin", -1.0)
+    field.setNumber(wake_near, "ZMax", 1.0)
+
+    wake_mid = field.add("Box")
+    field.setNumber(wake_mid, "VIn", WAKE_MID_SIZE)
+    field.setNumber(wake_mid, "VOut", FARFIELD_SIZE)
+    field.setNumber(wake_mid, "XMin", 5.0)
+    field.setNumber(wake_mid, "XMax", 12.0)
+    field.setNumber(wake_mid, "YMin", -0.4)
+    field.setNumber(wake_mid, "YMax", 0.4)
+    field.setNumber(wake_mid, "ZMin", -1.0)
+    field.setNumber(wake_mid, "ZMax", 1.0)
+
+    wake_far = field.add("Box")
+    field.setNumber(wake_far, "VIn", WAKE_FAR_SIZE)
+    field.setNumber(wake_far, "VOut", FARFIELD_SIZE)
+    field.setNumber(wake_far, "XMin", 12.0)
+    field.setNumber(wake_far, "XMax", DOWNSTREAM_LENGTH)
+    field.setNumber(wake_far, "YMin", -1.0)
+    field.setNumber(wake_far, "YMax", 1.0)
+    field.setNumber(wake_far, "ZMin", -1.0)
+    field.setNumber(wake_far, "ZMax", 1.0)
 
     minimum = field.add("Min")
-    field.setNumbers(minimum, "FieldsList", [airfoil_threshold, wake_core, wake_outer])
+    field.setNumbers(
+        minimum,
+        "FieldsList",
+        [airfoil_threshold, separation_zone, wake_near, wake_mid, wake_far],
+    )
     field.setAsBackgroundMesh(minimum)
 
     # BoundaryLayer is NOT a size field — it must be registered via
@@ -342,14 +604,27 @@ def configure_mesh_fields(
 
 def add_named_physical_groups(
     gmsh_module,
-    base_surface_tag: int,
-    extruded_entities: list[tuple[int, int]],
+    base_surface_tags: list[int],
     outer_curve_tags: list[int],
     airfoil_curve_tags: list[int],
 ) -> None:
-    top_surface_tag = extruded_entities[0][1]
-    volume_tag = extruded_entities[1][1]
-    lateral_surfaces = [tag for dim, tag in extruded_entities[2:] if dim == 2]
+    tolerance = 1e-9
+    top_surface_tags: list[int] = []
+    lateral_surfaces: list[int] = []
+
+    for dim, tag in gmsh_module.model.getEntities(2):
+        if tag in base_surface_tags:
+            continue
+
+        _, _, z_min, _, _, z_max = gmsh_module.model.getBoundingBox(dim, tag)
+        if abs(z_min - SPANWISE_THICKNESS) < tolerance and abs(z_max - SPANWISE_THICKNESS) < tolerance:
+            top_surface_tags.append(tag)
+        elif z_min < -tolerance or z_max > SPANWISE_THICKNESS + tolerance:
+            continue
+        elif z_min < tolerance and z_max > SPANWISE_THICKNESS - tolerance:
+            lateral_surfaces.append(tag)
+
+    volume_tags = [tag for dim, tag in gmsh_module.model.getEntities(3)]
 
     freestream_surfaces, aerofoil_surfaces = classify_lateral_surfaces(
         gmsh_module,
@@ -358,7 +633,7 @@ def add_named_physical_groups(
         airfoil_curve_tags,
     )
 
-    front_back_tag = gmsh_module.model.addPhysicalGroup(2, [base_surface_tag, top_surface_tag])
+    front_back_tag = gmsh_module.model.addPhysicalGroup(2, [*base_surface_tags, *top_surface_tags])
     gmsh_module.model.setPhysicalName(2, front_back_tag, "frontAndBack")
 
     freestream_tag = gmsh_module.model.addPhysicalGroup(2, freestream_surfaces)
@@ -367,7 +642,7 @@ def add_named_physical_groups(
     aerofoil_tag = gmsh_module.model.addPhysicalGroup(2, aerofoil_surfaces)
     gmsh_module.model.setPhysicalName(2, aerofoil_tag, "aerofoil")
 
-    volume_group = gmsh_module.model.addPhysicalGroup(3, [volume_tag])
+    volume_group = gmsh_module.model.addPhysicalGroup(3, volume_tags)
     gmsh_module.model.setPhysicalName(3, volume_group, "fluid")
 
 
@@ -509,17 +784,16 @@ def build_mesh(
     gmsh_module.option.setNumber("General.Terminal", 0)
     gmsh_module.option.setNumber("Mesh.MshFileVersion", 2.2)
     gmsh_module.option.setNumber("Mesh.SaveAll", 0)
-    gmsh_module.option.setNumber("Mesh.Algorithm", 8)            # Frontal-Delaunay for Quads
+    gmsh_module.option.setNumber("Mesh.Algorithm", 6)            # Frontal-Delaunay
     gmsh_module.option.setNumber("Mesh.MeshSizeFromPoints", 0)
     gmsh_module.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
     gmsh_module.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
 
-    airfoil_loop, airfoil_curve_tags = add_airfoil_loop(gmsh_module, coords)
-    domain_loop, outer_curve_tags = add_c_domain_loop(gmsh_module)
-    fluid_surface_tag = gmsh_module.model.geo.addPlaneSurface([domain_loop, airfoil_loop])
+    airfoil = add_airfoil_loop(gmsh_module, coords)
+    surface_topology = add_fluid_surfaces(gmsh_module, airfoil)
 
     extruded_entities = gmsh_module.model.geo.extrude(
-        [(2, fluid_surface_tag)],
+        [(2, surface_tag) for surface_tag in surface_topology.fluid_surface_tags],
         0.0,
         0.0,
         SPANWISE_THICKNESS,
@@ -529,15 +803,25 @@ def build_mesh(
     )
 
     gmsh_module.model.geo.synchronize()
+    gmsh_module.model.mesh.embed(
+        1,
+        surface_topology.embedded_curve_tags,
+        2,
+        surface_topology.wake_surface_tag,
+    )
 
     add_named_physical_groups(
         gmsh_module,
-        fluid_surface_tag,
-        extruded_entities,
-        outer_curve_tags,
-        airfoil_curve_tags,
+        surface_topology.fluid_surface_tags,
+        surface_topology.outer_curve_tags,
+        surface_topology.airfoil_curve_tags,
     )
-    configure_mesh_fields(gmsh_module, airfoil_curve_tags, first_layer_height, bl_thickness)
+    configure_mesh_fields(
+        gmsh_module,
+        airfoil.boundary_layer_curve_tags,
+        first_layer_height,
+        bl_thickness,
+    )
 
     gmsh_module.model.mesh.generate(3)
     cell_count = count_volume_cells(gmsh_module)
