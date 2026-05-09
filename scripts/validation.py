@@ -51,14 +51,24 @@ VALIDATION_DIR = PROJECT_ROOT / "validation"
 # Columns: alpha_deg, Cl, Cd
 LADSON_NACA0012_RE6E6 = np.array(
     [
-        [0.00, 0.0000, 0.00819],
-        [4.04, 0.4347, 0.00892],
-        [6.09, 0.6438, 0.01016],
-        [8.30, 0.8542, 0.01193],
-        [10.12, 1.0418, 0.01437],
-        [12.13, 1.2356, 0.01776],
-        [14.22, 1.4115, 0.02218],
-        [15.26, 1.4946, 0.02476],
+        [-3.99, -0.4363, 0.00871],
+        [-1.98, -0.2213, 0.00792],
+        [-0.03, -0.0115, 0.00803],
+        [0.04, -0.0013, 0.00811],
+        [2.00, 0.2213, 0.00814],
+        [4.06, 0.4365, 0.00814],
+        [6.09, 0.6558, 0.00851],
+        [8.09, 0.8689, 0.00985],
+        [10.18, 1.0809, 0.01165],
+        [11.13, 1.1731, 0.01247],
+        [12.10, 1.2644, 0.01299],
+        [13.31, 1.3676, 0.01408],
+        [14.08, 1.4316, 0.01533],
+        [15.24, 1.5169, 0.01870],
+        [16.33, 1.5855, 0.02186],
+        [17.13, 1.6219, 0.02513],
+        [18.21, 1.0104, 0.25899],
+        [19.27, 1.0664, 0.43446],
     ],
     dtype=np.float64,
 )
@@ -185,19 +195,14 @@ def build_mesh(case_dir: Path, mesh: ModuleType, force: bool) -> None:
     if force:
         mesh.reset_case_mesh(case_dir)
 
-    gmsh_module = mesh.require_gmsh()
-    gmsh_module.initialize()
-    try:
-        params = mesh.load_params(case_dir)
-        metrics = mesh.build_mesh(
-            case_dir / "aerofoil.dat",
-            params["Re"],
-            case_dir,
-            chord=mesh.CHORD,
-            target_y_plus=mesh.TARGET_Y_PLUS,
-        )
-    finally:
-        gmsh_module.finalize()
+    params = mesh.load_params(case_dir)
+    metrics = mesh.build_mesh(
+        case_dir / "aerofoil.dat",
+        params["Re"],
+        case_dir,
+        chord=mesh.CHORD,
+        target_y_plus=mesh.TARGET_Y_PLUS,
+    )
 
     log.info(
         "Meshed %s  cells=%d  nonOrtho=%.2f  skew=%.3f",

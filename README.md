@@ -38,7 +38,7 @@ Maps `(α, Re, thickness) → (Cl, Cd)` using 100 OpenFOAM RANS runs as training
 |---|---|
 | DOE | `pyDOE2` |
 | Geometry | `numpy` (analytic NACA formula) |
-| Meshing | `gmsh` Python API |
+| Meshing | OpenFOAM-native `blockMesh` + `snappyHexMesh` + `extrudeMesh` |
 | CFD | OpenFOAM 12 — `foamRun` (`solver incompressibleFluid`) + `kOmegaSST` |
 | Parallelism | GNU `parallel` |
 | Surrogates | `scikit-learn`, `smt` |
@@ -144,19 +144,19 @@ y_upper = +y_t,  y_lower = −y_t
 **Inputs:** `aerofoil.dat` per case, Re from `samples.csv`
 **Outputs:** OpenFOAM polyMesh in `cases/case_{i:04d}/constant/polyMesh/`
 
-First cell height for y⁺ = 0.5:
+First cell height for y⁺ = 1:
 ```
 Cf = 0.026 / Re^(1/7)
 U_inf = Re * ν / chord
 τ_w = 0.5 * 1.225 * U_inf² * Cf
 u_τ = sqrt(τ_w / 1.225)
-h = 0.5 * ν / u_τ
+h = 1.0 * ν / u_τ
 ```
 
-- C-topology domain: 20c upstream, 30c downstream, 20c transverse
-- Target ~50 000 cells (2D)
-- Convert: `gmshToFoam mesh.msh` via subprocess
-- Accept only if `checkMesh` passes: non-orthogonality < 70°, skewness < 4
+- Build a 3D one-cell slab with `blockMesh`, snap/refine with `snappyHexMesh`, then recover the final 2D mesh with `extrudeMesh`
+- C-topology far field: 20c upstream, 30c downstream, 20c transverse
+- Accept only if `checkMesh -meshQuality` passes: non-orthogonality < 70°, skewness < 4
+- The script logs retained wall-layer count separately, since a clean outer mesh does not by itself guarantee successful `y+ ≈ 1` layer growth
 
 ---
 
