@@ -39,6 +39,17 @@ TURBULENCE_LENGTH_SCALE = 0.07 * CHORD
 CMU = 0.09
 DEFAULT_JOBS = 4
 
+# Mesh-time templates are rendered by 03_mesh.py with a per-case context that
+# is unavailable here (FIRST_LAYER_THICKNESS, MESH_SPAN, …). Skip them so the
+# CFD render pass does not try to interpolate undefined variables.
+MESH_TEMPLATE_NAMES = frozenset(
+    {
+        "system/blockMeshDict.template",
+        "system/snappyHexMeshDict.template",
+        "system/extrudeMeshDict.template",
+    }
+)
+
 JINJA_ENV = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
 
 
@@ -152,7 +163,9 @@ def copy_static_template_files(case_dir: Path) -> None:
 
 def render_template_files(case_dir: Path, context: dict[str, str]) -> None:
     for source_path in TEMPLATE_DIR.rglob("*.template"):
-        template_name = str(source_path.relative_to(TEMPLATE_DIR))
+        template_name = source_path.relative_to(TEMPLATE_DIR).as_posix()
+        if template_name in MESH_TEMPLATE_NAMES:
+            continue
         target_relative = template_name.removesuffix(".template")
         target_path = case_dir / target_relative
         target_path.parent.mkdir(parents=True, exist_ok=True)

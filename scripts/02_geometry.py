@@ -25,6 +25,9 @@ CASES_DIR = PROJECT_ROOT / "cases"
 
 N_POINTS = 200
 
+STL_Z_LOWER = -0.5
+STL_Z_UPPER = +0.5
+
 
 def naca_thickness(x: np.ndarray, t: float) -> np.ndarray:
     """NACA 4-digit half-thickness distribution (open trailing edge)."""
@@ -56,6 +59,75 @@ def write_aerofoil_dat(path: Path, coords: np.ndarray) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
+def _format_facet(normal: np.ndarray, vertices: np.ndarray) -> str:
+    nx, ny, nz = normal
+    chunks = [f"  facet normal {nx:.8e} {ny:.8e} {nz:.8e}", "    outer loop"]
+    for vx, vy, vz in vertices:
+        chunks.append(f"      vertex {vx:.8e} {vy:.8e} {vz:.8e}")
+    chunks.append("    endloop")
+    chunks.append("  endfacet")
+    return "\n".join(chunks)
+
+
+def _triangle_normal(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray) -> np.ndarray:
+    n = np.cross(p1 - p0, p2 - p0)
+    norm = np.linalg.norm(n)
+    if norm == 0.0:
+        return n
+    return n / norm
+
+
+def write_aerofoil_stl(
+    path: Path,
+    coords: np.ndarray,
+    z_lo: float = STL_Z_LOWER,
+    z_hi: float = STL_Z_UPPER,
+    name: str = "aerofoil",
+) -> None:
+    """Write an ASCII STL of the aerofoil polygon extruded between z_lo and z_hi.
+
+    The 2D polygon is CCW when viewed from +z (upper surface TE→LE, lower LE→TE,
+    closed implicitly from coords[-1] back to coords[0]). Three triangulated
+    surfaces are emitted: back cap at z_hi (normal +z), front cap at z_lo
+    (normal -z), and a side ribbon (two triangles per polygon edge).
+    """
+    n = len(coords)
+    if n < 3:
+        raise ValueError("aerofoil polygon needs at least 3 points to triangulate")
+
+    back = np.column_stack((coords[:, 0], coords[:, 1], np.full(n, z_hi)))
+    front = np.column_stack((coords[:, 0], coords[:, 1], np.full(n, z_lo)))
+
+    facets: list[str] = []
+
+    # Back cap at z_hi: fan from index 0; CCW order produces outward normal +z.
+    z_plus = np.array([0.0, 0.0, +1.0])
+    for i in range(1, n - 1):
+        facets.append(_format_facet(z_plus, np.array([back[0], back[i], back[i + 1]])))
+
+    # Front cap at z_lo: same fan with reversed winding so normal is -z.
+    z_minus = np.array([0.0, 0.0, -1.0])
+    for i in range(1, n - 1):
+        facets.append(_format_facet(z_minus, np.array([front[0], front[i + 1], front[i]])))
+
+    # Side ribbon: two triangles per edge (i, (i+1) % n), including the closing
+    # trailing-edge segment. Outward normal points away from the airfoil
+    # interior, which for a CCW polygon is (dy, -dx, 0) where (dx, dy) = P_{i+1}-P_i.
+    for i in range(n):
+        j = (i + 1) % n
+        p_i_front = front[i]
+        p_i_back = back[i]
+        p_j_front = front[j]
+        p_j_back = back[j]
+
+        normal = _triangle_normal(p_i_front, p_j_front, p_j_back)
+        facets.append(_format_facet(normal, np.array([p_i_front, p_j_front, p_j_back])))
+        facets.append(_format_facet(normal, np.array([p_i_front, p_j_back, p_i_back])))
+
+    body = "\n".join(facets)
+    path.write_text(f"solid {name}\n{body}\nendsolid {name}\n")
+
+
 def write_params_json(path: Path, alpha_deg: float, Re: float, thickness: float) -> None:
     payload = {
         "alpha_deg": float(alpha_deg),
@@ -83,6 +155,11 @@ def main() -> None:
 
         coords = aerofoil_polygon(row["thickness"], N_POINTS)
         write_aerofoil_dat(case_dir / "aerofoil.dat", coords)
+
+        geometry_dir = case_dir / "constant" / "geometry"
+        geometry_dir.mkdir(parents=True, exist_ok=True)
+        write_aerofoil_stl(geometry_dir / "aerofoil.stl", coords)
+
         write_params_json(
             case_dir / "params.json",
             alpha_deg=row["alpha_deg"],

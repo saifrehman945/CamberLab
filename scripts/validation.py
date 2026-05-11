@@ -168,6 +168,9 @@ def write_case_inputs(
     case_dir.mkdir(parents=True, exist_ok=True)
     coords = geometry.aerofoil_polygon(thickness, geometry.N_POINTS)
     geometry.write_aerofoil_dat(case_dir / "aerofoil.dat", coords)
+    geometry_dir = case_dir / "constant" / "geometry"
+    geometry_dir.mkdir(parents=True, exist_ok=True)
+    geometry.write_aerofoil_stl(geometry_dir / "aerofoil.stl", coords)
     geometry.write_params_json(
         case_dir / "params.json",
         alpha_deg=alpha_deg,
@@ -182,27 +185,14 @@ def build_mesh(case_dir: Path, mesh: ModuleType, force: bool) -> None:
         log.info("Mesh already present for %s — skipping (use --force to rebuild)", case_dir.name)
         return
 
-    if force:
-        mesh.reset_case_mesh(case_dir)
-
-    gmsh_module = mesh.require_gmsh()
-    gmsh_module.initialize()
-    try:
-        params = mesh.load_params(case_dir)
-        metrics = mesh.build_mesh(
-            case_dir / "aerofoil.dat",
-            params["Re"],
-            case_dir,
-            chord=mesh.CHORD,
-            target_y_plus=mesh.TARGET_Y_PLUS,
-        )
-    finally:
-        gmsh_module.finalize()
+    params = mesh.load_params(case_dir)
+    metrics = mesh.build_mesh(case_dir, params)
 
     log.info(
-        "Meshed %s  cells=%d  nonOrtho=%.2f  skew=%.3f",
+        "Meshed %s  cells=%d  layers≈%.2f  nonOrtho=%.2f  skew=%.3f",
         case_dir.name,
         int(metrics["cell_count"]),
+        metrics["layers_avg"],
         metrics["max_non_orthogonality"],
         metrics["max_skewness"],
     )

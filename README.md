@@ -158,6 +158,10 @@ h = 0.5 * ν / u_τ
 - Convert: `gmshToFoam mesh.msh` via subprocess
 - Accept only if `checkMesh` passes: non-orthogonality < 70°, skewness < 4
 
+#### snappyHexaMesh testing
+ Tried SnappyHexamesh. Original gmes implimentation is moved to 03_mesh_gmesh.py.
+
+ **Results**, See validation directory for Comparison of Cd and Cl. A pretty bad mesh for elements after boundary layer. See ![Mesh after boundary Elements](images/mesh_after_boundary.png)
 ---
 
 ### Stage 4 — `04_run_cfd.py`
