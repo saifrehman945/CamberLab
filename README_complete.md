@@ -1,7 +1,7 @@
-# CFD Surrogate Model for NACA Aerofoil — Project Documentation
+# NACASurrogate — Regime-Aware CFD Surrogate Modeling for NACA Aerofoils
 
 ## Author
-**Saif ur Rehman** — CFD Researcher | Physics-AI & Design Optimization  
+**Saif ur Rehman** — CFD Researcher | Physics-AI & Design Optimization
 [Portfolio](https://saifrehman945.github.io/) | [GitHub](https://github.com/saifrehman945)
 
 ---
@@ -11,773 +11,828 @@
 1. [Objective](#1-objective)
 2. [Why Build a Surrogate?](#2-why-build-a-surrogate)
 3. [What Is a Surrogate Model?](#3-what-is-a-surrogate-model)
-4. [Scope and Constraints](#4-scope-and-constraints)
-5. [Design Choices](#5-design-choices)
-6. [Design Space Definition](#6-design-space-definition)
-7. [Output Targets](#7-output-targets)
-8. [Toolchain (All Free and Open Source)](#8-toolchain-all-free-and-open-source)
-9. [Full Pipeline](#9-full-pipeline)
-   - [Stage 1 — Design of Experiments (DOE)](#stage-1--design-of-experiments-doe)
-   - [Stage 2 — Parametric Geometry Generation](#stage-2--parametric-geometry-generation)
-   - [Stage 3 — Automated Meshing](#stage-3--automated-meshing)
-   - [Stage 4 — CFD Simulation (OpenFOAM)](#stage-4--cfd-simulation-openfoam)
-   - [Stage 5 — Data Harvesting and Cleaning](#stage-5--data-harvesting-and-cleaning)
-   - [Stage 6 — Surrogate Training](#stage-6--surrogate-training)
-   - [Stage 7 — Validation, Comparison, and Limitation Study](#stage-7--validation-comparison-and-limitation-study)
-   - [Stage 8 (Stretch Goal) — Active Learning Refinement](#stage-8-stretch-goal--active-learning-refinement)
-10. [Surrogate Comparison Matrix](#10-surrogate-comparison-matrix)
-11. [Known Limitations to Investigate](#11-known-limitations-to-investigate)
-12. [Directory Structure](#12-directory-structure)
-13. [LLM Coding Prompts Per Stage](#13-llm-coding-prompts-per-stage)
+4. [Why Regime-Aware? — Motivation for the Redesign](#4-why-regime-aware--motivation-for-the-redesign)
+5. [Scope and Constraints](#5-scope-and-constraints)
+6. [Flow Regime Definitions](#6-flow-regime-definitions)
+7. [Design Space and DOE Strategy](#7-design-space-and-doe-strategy)
+8. [Output Targets](#8-output-targets)
+9. [Toolchain](#9-toolchain)
+10. [Pipeline — 10 Stages](#10-pipeline--10-stages)
+11. [Per-Regime CFD Strategy](#11-per-regime-cfd-strategy)
+12. [Validation Strategy and Phases](#12-validation-strategy-and-phases)
+13. [Surrogate Training Strategy](#13-surrogate-training-strategy)
+14. [Surrogate Comparison Matrix](#14-surrogate-comparison-matrix)
+15. [Metadata Schema](#15-metadata-schema)
+16. [Risk Register](#16-risk-register)
+17. [Known Limitations](#17-known-limitations)
+18. [Directory Structure](#18-directory-structure)
+19. [Implementation Sequence](#19-implementation-sequence)
+20. [Future Extensions](#20-future-extensions)
 
 ---
 
 ## 1. Objective
 
-Build a **parametric surrogate model** that learns the mapping:
+Build a **regime-aware parametric surrogate model** that learns the mapping:
 
 ```
-(angle_of_attack, Reynolds_number, thickness) → (Cl, Cd)
+(angle_of_attack, Reynolds_number, thickness, flow_regime) → (Cl, Cd)
 ```
 
-from a batch of high-fidelity OpenFOAM RANS CFD simulations of NACA 4-digit aerofoils.
+from a curated set of high-fidelity OpenFOAM RANS CFD simulations of NACA 4-digit
+aerofoils, where each simulation is run with a turbulence model, wall treatment,
+and mesh appropriate to the local flow physics rather than a single global
+configuration.
 
-The surrogate replaces the CFD solver during design exploration — reducing evaluation time from ~30 minutes per case (CFD) to milliseconds (surrogate inference).
+The surrogate replaces the CFD solver during design exploration — reducing
+evaluation time from ~5–60 minutes per case to milliseconds — while preserving
+the physical fidelity advantages of a regime-specific solver setup.
 
-The **primary goal is educational**: to understand how surrogates work, where they break, and what their practical limitations are — by building the entire pipeline from scratch.
+The primary goal is to **build a physics-aware data pipeline that produces a
+clean, defensible aerodynamic dataset** and a corresponding surrogate that is
+trustworthy across the design space rather than only in a narrow band.
 
 ---
 
 ## 2. Why Build a Surrogate?
 
-A single CFD simulation of an aerofoil takes 20–60 minutes depending on mesh resolution and convergence. Design optimization, uncertainty quantification, and sensitivity analysis may require thousands of evaluations. This makes direct CFD-in-the-loop optimization computationally prohibitive.
+A single 2D RANS simulation of an aerofoil takes 5–60 minutes depending on
+mesh resolution, turbulence model, and convergence behavior. Design
+optimization, uncertainty quantification, sensitivity analysis, and
+hyperparameter search may require thousands of evaluations. This makes direct
+CFD-in-the-loop optimization computationally prohibitive.
 
-A surrogate model (also called a response surface model or metamodel) is trained on a *small, structured set* of CFD runs and learns to approximate the input–output relationship. Once trained, it evaluates in milliseconds.
+A surrogate model (response surface, metamodel) is trained on a small,
+structured set of CFD runs and learns to approximate the input–output
+relationship. Once trained it evaluates in milliseconds, enabling:
 
-**Key questions this project will answer by doing:**
-- How many CFD samples are needed for a reliable surrogate?
-- Which surrogate type (GP, RF, MLP, RBF) works best for aerodynamic coefficients?
-- Where does the surrogate fail — near stall, outside the training range, at high Re?
-- Does the surrogate respect physical constraints (e.g. Cl = 0 at α = 0 for symmetric aerofoils)?
-- How does uncertainty quantification (from GP) behave near the training boundary?
+- Gradient-free optimization over the parametric design space
+- Sobol-style global sensitivity analysis
+- Monte-Carlo uncertainty propagation
+- Real-time aerodynamic estimation in conceptual design tools
+
+**Questions this project is set up to answer:**
+
+- How many CFD samples are needed for a reliable surrogate across regimes?
+- Does regime-conditioning improve surrogate accuracy versus a single global model?
+- Which surrogate type (GP, RF, MLP, Kriging) works best per regime and globally?
+- Where does the surrogate fail — at regime boundaries, near stall, outside the training Re range?
+- Does the surrogate respect physical constraints (Cl ≈ 0 at α = 0° for symmetric aerofoils, Cd > 0)?
+- How does GP uncertainty behave at regime boundaries, and can it be used to drive active learning?
 
 ---
 
 ## 3. What Is a Surrogate Model?
 
-A surrogate model is a data-driven approximation of an expensive function. In this context:
+A surrogate model is a data-driven approximation of an expensive function. In
+this context:
 
-- **Input (X):** Design and operating parameters — angle of attack α, Reynolds number Re, aerofoil thickness t
-- **Output (y):** Aerodynamic performance — lift coefficient Cl, drag coefficient Cd
-- **Training data:** Results from N high-fidelity CFD simulations
-- **Inference:** Given new (α, Re, t), predict (Cl, Cd) without running CFD
+- **Inputs (X):** design and operating parameters — angle of attack α, Reynolds
+  number Re, thickness t, plus the categorical regime label encoded as one-hot
+- **Outputs (y):** aerodynamic performance — Cl and Cd
+- **Training data:** N high-fidelity CFD simulations spanning four regimes
+- **Inference:** given a new `(α, Re, t)`, classify into a regime, then predict
+  Cl and Cd without running CFD
 
-The surrogate is distinct from the KAN time-series surrogate in previous work (which predicted Cd over time for a *single* fixed geometry). This is a **parametric surrogate** — it generalizes across *different* geometries and operating conditions.
+This is a **parametric surrogate** — it generalizes across geometries and
+operating conditions, distinct from a time-series surrogate that learns the
+temporal evolution of a single fixed case.
 
 ---
 
-## 4. Scope and Constraints
+## 4. Why Regime-Aware? — Motivation for the Redesign
+
+The original NACASurrogate (commit `5150a91`) used a single CFD recipe across
+the entire aerodynamic design space:
+
+- one turbulence model (`kOmegaSST`)
+- one mesh philosophy (low-Re, fully resolved walls)
+- one y+ target (~0.5)
+- one solver template
+- a single LHS of 100 points over the full `(α, Re, t)` box
+
+This is physically inconsistent. The same LHS sample crosses at least four
+fundamentally different flow regimes:
+
+1. **Attached turbulent flow** at moderate Re and moderate α — well-modeled by
+   either Spalart–Allmaras or `kOmegaSST` with wall functions on a coarse mesh.
+2. **Near-stall separated flow** at α > 10° — requires fully resolved walls,
+   careful relaxation, and a finer mesh to capture wake structure. Wall
+   functions corrupt the separation prediction.
+3. **Transitional low-Re flow** at Re < 1×10⁶ — fully turbulent models predict
+   the wrong drag and miss laminar separation bubbles entirely. Requires a
+   transition-aware model (`kkLOmega` or `kOmegaSSTLM`).
+4. **Fully turbulent high-Re attached flow** at Re > 2×10⁶, low α — accurate
+   with Spalart–Allmaras + wall functions; expensive and wasteful with a
+   y+ < 1 mesh.
+
+Using a single recipe across all four leads to:
+
+- **Reduced CFD reliability:** transitional cases run with a fully turbulent
+  model produce confidently wrong Cl/Cd, polluting the training data.
+- **Wasted compute:** running a low-Re mesh at Re = 3×10⁶ requires 5–10×
+  more cells than necessary for the physics in that regime.
+- **Poor validation quality:** a single mesh and template cannot be validated
+  against the canonical reference cases for each regime; what passes for
+  Regime A is wrong for Regime C.
+- **Discontinuous surrogate behavior:** error structure changes abruptly across
+  the design space, producing a non-smooth target function that all of GP, RF,
+  MLP, and Kriging struggle to fit well simultaneously.
+- **Misleading extrapolation:** OOD predictions inherit the dominant regime's
+  error mode and give no indication that the input has crossed a physical
+  boundary.
+
+The redesign **partitions the design space into four flow regimes**, each with
+a validated CFD template, and merges the results into a single dataset with
+`regime_id` as an explicit input feature. The surrogate learns a smoother
+target function and is auditable at the regime level.
+
+---
+
+## 5. Scope and Constraints
 
 | Item | Choice | Reason |
 |---|---|---|
-| Aerofoil family | NACA 4-digit | Analytic formula, no CAD needed, extensively validated |
-| CFD solver | OpenFOAM 12 (`foamRun` + `solver incompressibleFluid`) | Free, scriptable, industry-standard RANS |
-| Meshing | gmsh Python API | Free, fully scriptable, no GUI required |
-| DOE | Latin Hypercube Sampling | Better space-filling than full factorial at same N |
-| Surrogate library | scikit-learn + smt | Free, well-documented, supports all target model types |
-| Sensitivity analysis | SALib | Free, supports Sobol indices |
+| Aerofoil family | NACA 4-digit symmetric (Phase 1) | Analytic formula, no CAD, extensively validated |
+| CFD solver | OpenFOAM 12 (`foamRun` + `incompressibleFluid`) | Free, scriptable, current Foundation release |
+| Meshing | gmsh Python API | Free, fully scriptable, regime-specific topologies |
+| DOE | Per-regime LHS, then concatenated | Avoids wasting samples in physically incoherent regions |
+| Surrogate library | scikit-learn + smt | Free, well-documented |
+| Sensitivity | SALib | Free, supports Sobol indices |
 | No proprietary tools | Fluent, ICEM, DAKOTA excluded | Fully reproducible on any Linux machine |
 
 ---
 
-## 5. Design Choices
+## 6. Flow Regime Definitions
 
-### Aerofoil: NACA 4-digit series
+Four regimes are defined by `(α, Re, t)` bounding boxes plus a physics
+description and a CFD recipe.
 
-The NACA 4-digit aerofoil is defined by three shape parameters:
-- **m** — maximum camber as a fraction of chord (1st digit / 100)
-- **p** — position of maximum camber along chord (2nd digit / 10)
-- **t** — maximum thickness as a fraction of chord (3rd+4th digits / 100)
+### Regime A — Attached turbulent
 
-For example, NACA 2412 means: m=0.02, p=0.4, t=0.12.
+| Property | Value |
+|---|---|
+| α | 0°–8° |
+| Re | 1.5×10⁶ – 3×10⁶ |
+| t/c | 0.10 – 0.18 |
+| Physics | Attached turbulent BL, mild adverse pressure gradient, limited separation |
+| Turbulence | `SpalartAllmaras` (preferred); `kOmegaSST` with wall functions acceptable |
+| Wall treatment | Wall functions |
+| Target y+ | 20–50 |
+| Prism layers | 15–20 |
+| Cell count | 80k – 200k |
+| Solver end-time | 2000 iterations |
 
-A symmetric aerofoil (NACA 00XX) has m=0, p=0. NACA 0012 is the standard benchmark.
+This is the **first regime to validate**. Its physics is the cleanest, the
+canonical reference data is the most abundant (NACA0012 at Re = 2×10⁶ and 3×10⁶
+in Abbott & von Doenhoff and on the NASA Turbulence Modelling Resource), and
+the CFD setup is robust.
 
-The upper and lower surface coordinates are given analytically:
+### Regime B — Near-stall separated
 
-```
-y_t(x) = 5t * (0.2969*sqrt(x) - 0.1260*x - 0.3516*x^2 + 0.2843*x^3 - 0.1015*x^4)
+| Property | Value |
+|---|---|
+| α | 10°–16° |
+| Re | 1×10⁶ – 3×10⁶ |
+| t/c | 0.12 – 0.24 |
+| Physics | Strong adverse pressure gradient, partial separation, wake growth, stall onset |
+| Turbulence | `kOmegaSST`; Transition SST optional in future work |
+| Wall treatment | Fully resolved |
+| Target y+ | < 1 |
+| Prism layers | 30–40 |
+| Cell count | 300k – 1M |
+| Solver end-time | 5000 iterations |
+| Notes | Pseudo-transient stabilization may be needed; URANS as future option |
 
-For symmetric (m=0): y_upper = +y_t, y_lower = -y_t
+Steady RANS becomes unreliable above ~14–16° as the flow transitions to
+massive separation. Cases past 16° are excluded.
 
-For cambered: compute camber line yc(x), then rotate y_t perpendicular to it.
-```
+### Regime C — Transitional low-Re
 
-### Why start with 3 parameters only (α, Re, t)?
+| Property | Value |
+|---|---|
+| α | 0°–8° |
+| Re | 3×10⁵ – 1×10⁶ |
+| t/c | 0.08 – 0.15 |
+| Physics | Laminar BL, transition, laminar separation bubbles |
+| Turbulence | `kkLOmega` (Walters–Cokljat); fallback `kOmegaSST` with low free-stream Tu |
+| Wall treatment | Fully resolved |
+| Target y+ | < 1 |
+| Prism layers | 35–45 |
+| Cell count | 500k – 1.2M |
+| Solver end-time | 4000 iterations |
 
-More parameters = exponentially more samples needed to fill the space. A 3-parameter space is tractable with 80–120 LHS samples. Camber (m, p) is added in a second phase once the pipeline is validated.
+This is the most physically delicate regime. It is implemented only after A
+and B are locked.
 
-### Why `foamRun` + `incompressibleFluid` (steady RANS)?
+### Regime D — Fully turbulent high-Re attached
 
-- Steady-state is valid for attached flow (α < ~14°)
-- Far cheaper than unsteady (pimpleFoam)
-- kOmegaSST turbulence model is the industry standard for aerofoil external aerodynamics
-- AoA is implemented by rotating inlet velocity direction — mesh stays fixed
-- On this OpenFOAM 12 install, `simpleFoam` has been superseded by `foamRun`
-  with `solver incompressibleFluid`
+| Property | Value |
+|---|---|
+| α | 0°–6° |
+| Re | 2×10⁶ – 5×10⁶ |
+| t/c | 0.10 – 0.18 |
+| Physics | Fully turbulent attached flow, minimal transition, minimal separation |
+| Turbulence | `SpalartAllmaras` |
+| Wall treatment | Wall functions |
+| Target y+ | 30–80 |
+| Prism layers | 12–18 |
+| Cell count | 50k – 150k |
+| Solver end-time | 2000 iterations |
+
+Regime D overlaps with Regime A by construction; the classifier (§11) gives
+D priority when it applies, because D's mesh is cheaper and the physics
+warrants the simpler treatment.
 
 ---
 
-## 6. Design Space Definition
+## 7. Design Space and DOE Strategy
 
-### Phase 1 parameters (start here)
+### Global envelope (used for surrogate inference)
 
-| Parameter | Symbol | Min | Max | Units | Notes |
-|---|---|---|---|---|---|
-| Angle of attack | α | 0 | 16 | degrees | Beyond 16° → deep stall, RANS unreliable |
-| Reynolds number | Re | 5×10⁵ | 3×10⁶ | — | Subsonic UAV to light aircraft regime |
-| Max thickness | t | 0.08 | 0.24 | fraction of chord | NACA 0008 to NACA 0024 |
-
-### Phase 2 parameters (add after Phase 1 works)
-
-| Parameter | Symbol | Min | Max | Units |
-|---|---|---|---|---|
-| Max camber | m | 0.0 | 0.09 | fraction of chord |
-| Camber position | p | 0.2 | 0.6 | fraction of chord |
-
-### Sample size
-
-- Phase 1: **100 LHS samples** over (α, Re, t)
-- Split: **80 training / 20 test** — the test set is separated before any surrogate training
-- Phase 2 (optional): 200 LHS samples over all 5 parameters
-
----
-
-## 7. Output Targets
-
-### Phase 1 — Scalar outputs (one value per simulation)
-
-| Output | Symbol | Source | Notes |
+| Parameter | Min | Max | Units |
 |---|---|---|---|
-| Lift coefficient | Cl | `forceCoeffs` in OpenFOAM | Primary target |
-| Drag coefficient | Cd | `forceCoeffs` in OpenFOAM | Primary target |
-| Lift-to-drag ratio | L/D | Derived: Cl/Cd | Useful for optimization |
+| α | 0 | 16 | degrees |
+| Re | 5×10⁵ | 3×10⁶ (5×10⁶ for D) | — |
+| t/c | 0.08 | 0.24 | — |
 
-### Phase 2 — Field output (1D distribution per simulation)
+### Per-regime sampling
 
-| Output | Symbol | Source | Notes |
+Samples are drawn via Latin Hypercube Sampling independently in each regime's
+bounding box, then concatenated:
+
+| Regime | N | Train | Test |
 |---|---|---|---|
-| Pressure coefficient | Cp(x/c) | `singleGraph` sample in OpenFOAM | Needs dimensionality reduction (POD/PCA) before surrogate training |
+| A | 80 | 64 | 16 |
+| B | 50 | 40 | 10 |
+| C | 30 | 24 | 6 |
+| D | 40 | 32 | 8 |
+| **Total** | **200** | **160** | **40** |
+
+The 80/20 train/test split is stratified by regime, so each regime contributes
+its 20% to the test set. This is critical — a random global split would give
+an empty C test set under bad luck and prevent per-regime error reporting.
+
+`samples.csv` columns: `[case_id, alpha_deg, Re, thickness, regime]`.
+`random_state = 42` for both LHS and the split.
+
+### Rationale for the allocation
+
+- Regime A is largest because it covers the broadest practical operating range
+  and gives the surrogate the most leverage in the most-used part of the
+  design space.
+- Regime B is moderately sized because each sample is the most expensive and
+  the surrogate is expected to be less accurate near stall regardless of
+  sample count.
+- Regime C is smallest because the regime is narrowest in Re and the CFD
+  setup is the most fragile.
+- Regime D is medium because each sample is cheap (smallest mesh, fast
+  convergence) but the physical regime is narrow.
 
 ---
 
-## 8. Toolchain (All Free and Open Source)
+## 8. Output Targets
 
-| Stage | Tool | Install |
+### Phase 1 — Scalar outputs
+
+| Output | Source | Notes |
 |---|---|---|
-| DOE | `pyDOE2` | `pip install pyDOE2` |
-| Geometry | `numpy` | `pip install numpy` |
-| Meshing | `gmsh` Python API | `pip install gmsh` |
-| CFD | OpenFOAM v10+ | [openfoam.org](https://openfoam.org) |
-| CFD automation | `bash`, `Python` | built-in |
-| Parallel runs | `GNU parallel` | `apt install parallel` |
-| Data handling | `pandas`, `numpy` | `pip install pandas` |
-| Surrogates | `scikit-learn`, `smt` | `pip install scikit-learn smt` |
-| Sensitivity | `SALib` | `pip install SALib` |
-| Visualization | `matplotlib`, `seaborn` | `pip install matplotlib seaborn` |
+| Cl | OpenFOAM `forceCoeffs` | Primary |
+| Cd | OpenFOAM `forceCoeffs` | Primary |
+| L/D | Derived | Secondary |
+
+### Phase 2 — Field outputs (optional)
+
+| Output | Source | Notes |
+|---|---|---|
+| Cp(x/c) | `singleGraph` on aerofoil patch | Needs POD/PCA before surrogate training |
 
 ---
 
-## 9. Full Pipeline
+## 9. Toolchain
 
-### Stage 1 — Design of Experiments (DOE)
-
-**Goal:** Generate a structured set of (α, Re, t) parameter combinations that efficiently covers the 3D design space.
-
-**Method:** Latin Hypercube Sampling (LHS) — divides each parameter axis into N equal intervals and samples one point from each interval, ensuring good space coverage with far fewer points than a full factorial grid.
-
-**Implementation steps:**
-
-1. Install `pyDOE2`: `pip install pyDOE2`
-2. Generate a unit LHS array of shape `(N_samples, 3)` where each column is in [0, 1]
-3. Scale each column to physical ranges:
-   - Column 0 (α): scale from [0, 1] to [0°, 16°]
-   - Column 1 (Re): scale from [0, 1] to [5e5, 3e6]
-   - Column 2 (t): scale from [0, 1] to [0.08, 0.24]
-4. Save the sample matrix as `samples.csv` with columns `[alpha_deg, Re, thickness]`
-5. Also save the 80/20 train-test split indices to `train_idx.npy` and `test_idx.npy`
-
-**Expected output:** `samples.csv` — 100 rows × 3 columns, all values within physical bounds.
-
-**Key constraint:** The 20 test samples must be set aside immediately and never used to inform meshing choices, solver settings, or surrogate hyperparameter tuning.
+| Stage | Tool |
+|---|---|
+| DOE | `pyDOE2` |
+| Geometry | `numpy` |
+| Meshing | `gmsh` Python API |
+| CFD | OpenFOAM 12 — `foamRun` |
+| Turbulence | `SpalartAllmaras`, `kOmegaSST`, `kkLOmega` |
+| Templating | `Jinja2` |
+| Parallelism | GNU `parallel` |
+| Surrogates | `scikit-learn`, `smt` |
+| Sensitivity | `SALib` |
+| Plots | `matplotlib`, `seaborn` |
+| Environment | `micromamba` |
 
 ---
 
-### Stage 2 — Parametric Geometry Generation
+## 10. Pipeline — 10 Stages
 
-**Goal:** For each row in `samples.csv`, generate the NACA aerofoil surface coordinates and write them in a format that gmsh can read.
+### Stage 1 — `01_generate_doe.py`
 
-**Method:** Analytic NACA 4-digit formula. No CAD software, no file downloads.
+**Inputs:** none. **Outputs:** `samples.csv`, `train_idx.npy`, `test_idx.npy`.
 
-**Implementation steps:**
-
-1. Write a Python function `naca4(t, m=0, p=0, n=200)` that:
-   - Generates `n` cosine-spaced x/c points from 0 to 1 (cosine spacing clusters points near LE and TE)
-   - Computes thickness distribution `y_t(x)` using the standard NACA formula
-   - For symmetric case (m=0): returns upper surface `(x, +y_t)` and lower surface `(x, -y_t)` as numpy arrays
-   - For cambered case: computes camber line `y_c(x)`, slope `dy_c/dx`, rotates thickness perpendicular to camber line
-   - Returns `(x_upper, y_upper, x_lower, y_lower)` all normalized by chord = 1.0
-
-2. For each sample `i` in `samples.csv`:
-   - Call `naca4(t=row['thickness'])` (Phase 1 uses symmetric aerofoils only)
-   - Concatenate upper and lower surfaces into a closed polygon (TE → upper → LE → lower → TE)
-   - Write to `cases/case_{i:04d}/aerofoil.dat` as space-separated `x y` coordinates
-   - Write a metadata file `cases/case_{i:04d}/params.json` with the parameter values
-
-**Expected output:** 100 directories, each containing `aerofoil.dat` and `params.json`.
-
----
-
-### Stage 3 — Automated Meshing
-
-**Goal:** Generate a 2D C-topology structured mesh around each aerofoil, suitable for RANS simulation with kOmegaSST.
-
-**Method:** gmsh Python API — fully scriptable, no GUI.
-
-**Mesh topology:** C-mesh. The domain extends 20 chord lengths upstream, 30 chord lengths downstream, and 20 chord lengths in the transverse direction. This is sufficient to avoid far-field boundary interference.
-
-**Wall resolution requirement:** y+ < 1 for low-Re kOmegaSST (resolves the viscous sublayer). First cell height `h` is computed from the flat-plate approximation:
-
-```
-tau_w = 0.5 * rho * U_inf^2 * Cf
-Cf ≈ 0.026 / Re^(1/7)    (turbulent flat plate)
-u_tau = sqrt(tau_w / rho)
-h = y_plus * nu / u_tau   (target y_plus = 0.5 to be safe)
+```python
+for regime, n, bounds in [
+    ("A", 80, ((0,8),  (1.5e6,3e6), (0.10,0.18))),
+    ("B", 50, ((10,16),(1e6,3e6),   (0.12,0.24))),
+    ("C", 30, ((0,8),  (3e5,1e6),   (0.08,0.15))),
+    ("D", 40, ((0,6),  (2e6,5e6),   (0.10,0.18))),
+]:
+    unit = pyDOE2.lhs(3, samples=n, criterion="maximin", random_state=42)
+    samples = scale_to_bounds(unit, bounds)
+    df = pd.DataFrame(samples, columns=["alpha_deg","Re","thickness"])
+    df["regime"] = regime
+    chunks.append(df)
+all_samples = pd.concat(chunks).reset_index(drop=True)
+all_samples.insert(0, "case_id", [f"case_{i:04d}" for i in range(len(all_samples))])
 ```
 
-This must be recomputed for each sample because Re varies.
+Stratified 80/20 split:
 
-**Implementation steps:**
-
-1. Write a Python function `build_mesh(aerofoil_dat, Re, chord=1.0, output_dir)` using `import gmsh`:
-   - Initialize gmsh: `gmsh.initialize()`
-   - Read the aerofoil coordinates and create spline curves for upper and lower surfaces
-   - Create the C-topology far-field boundary (semicircle upstream + rectangle downstream)
-   - Set mesh size fields: fine near the aerofoil surface (target first cell height from y+ formula), coarser in the far field
-   - Generate 2D mesh: `gmsh.model.mesh.generate(2)`
-   - Write to `cases/case_{i:04d}/constant/polyMesh/` using gmsh's OpenFOAM export, OR write `.msh` file and convert with `gmshToFoam`
-   - Run `checkMesh` (OpenFOAM utility) and parse output to confirm max non-orthogonality < 70° and max skewness < 4
-
-2. Loop over all 100 cases and call `build_mesh()` for each
-
-3. Log any cases where `checkMesh` fails — these are excluded from the run queue
-
-**Expected output:** 100 OpenFOAM-format polyMesh directories, all passing `checkMesh`.
-
-**Target mesh size:** ~50,000 cells for 2D. This balances accuracy and per-case runtime.
-
----
-
-### Stage 4 — CFD Simulation (OpenFOAM)
-
-**Goal:** Run steady RANS (`foamRun` with `solver incompressibleFluid` + `kOmegaSST`) for each case and extract converged Cl and Cd.
-
-**OpenFOAM case structure required:**
-
-```
-case_{i}/
-├── 0/
-│   ├── U           ← inlet velocity computed from Re and alpha
-│   ├── p
-│   ├── k
-│   ├── omega
-│   └── nut
-├── constant/
-│   ├── polyMesh/   ← from Stage 3
-│   └── momentumTransport   ← kOmegaSST
-├── system/
-│   ├── controlDict  ← includes forceCoeffs function object
-│   ├── fvSchemes
-│   ├── fvSolution
-│   └── sampleDict   ← for Cp extraction (Phase 2)
+```python
+from sklearn.model_selection import train_test_split
+train_idx, test_idx = train_test_split(
+    all_samples.index.values, test_size=0.20,
+    stratify=all_samples["regime"], random_state=42
+)
 ```
 
-**Inlet velocity from Re and alpha:**
+### Stage 2 — `02_classify_regime.py`
 
+Inference-time classifier. At DOE time the regime is known by construction,
+so this stage exposes a function used by the surrogate for new query points
+and by `08_validate_regimes.py` for OOD probes. See `CLAUDE.md` §11 for the
+priority rule.
+
+### Stage 3 — `03_generate_geometry.py`
+
+Symmetric NACA 4-digit profile, 200 cosine-spaced points, closed polygon
+(upper TE→LE then lower LE→TE). Writes `aerofoil.dat` and `params.json` per
+case directory. Identical to the original Stage 2.
+
+### Stage 4 — `04_generate_mesh.py`
+
+Mesh strategy is regime-specific. The script reads `samples.csv`, picks the
+regime, computes the first cell height for the regime's y+ target, and uses
+a regime-specific gmsh recipe:
+
+```python
+Y_PLUS = {"A": 30.0, "B": 0.5, "C": 0.5, "D": 50.0}
+LAYERS = {"A": (15, 1.20), "B": (35, 1.10), "C": (40, 1.08), "D": (15, 1.25)}
+WAKE_REFINE = {"A": "medium", "B": "strong", "C": "strong", "D": "light"}
 ```
-U_inf = Re * nu / chord      (nu = 1.5e-5 m²/s for air at 20°C, chord = 1.0 m)
-Ux = U_inf * cos(alpha_rad)
-Uy = U_inf * sin(alpha_rad)
-```
 
-**forceCoeffs setup in controlDict:**
+Mesh accepted only when `checkMesh` passes: non-orthogonality < 70°, skewness
+< 4, all cells valid. Achieved mesh metrics are written into the
+`case_metadata.json` ahead of CFD execution.
 
-```c++
-forceCoeffs
-{
-    type            forceCoeffs;
-    libs            ("libforces.so");
-    patches         (aerofoil);
-    rhoInf          1.225;
-    CofR            (0.25 0 0);   // quarter-chord reference point
-    liftDir         (0 1 0);      // lift direction (perpendicular to freestream for alpha=0)
-    dragDir         (1 0 0);      // drag direction (along freestream for alpha=0)
-    // NOTE: for non-zero alpha, liftDir and dragDir must be rotated
-    magUInf         <U_inf>;
-    lRef            1.0;
-    Aref            1.0;
+### Stage 5 — `05_prepare_case.py`
+
+Copies `templates/regime_{X}/` to `cases/case_{i:04d}/` and renders all
+`.jinja` files with Jinja2. Variables:
+
+```python
+context = {
+    "UX":        f"{Ux:.6f}",
+    "UY":        f"{Uy:.6f}",
+    "UINF":      f"{U_inf:.6f}",
+    "LIFTDIR_X": f"{lift_x:.6f}",  "LIFTDIR_Y": f"{lift_y:.6f}",
+    "DRAGDIR_X": f"{drag_x:.6f}",  "DRAGDIR_Y": f"{drag_y:.6f}",
+    "NU":        f"{nu:.6e}",
+    "K0":        f"{k0:.6e}",       # SST and transition only
+    "OMEGA0":    f"{omega0:.6e}",
+    "NUT0":      f"{nut0:.6e}",
+    "NUTILDA0":  f"{nutilda0:.6e}", # SA only
+    "KL0":       f"{kl0:.6e}",      # kkLOmega only
+    "END_TIME":  END_TIME[regime],
 }
 ```
 
-**Important:** For non-zero AoA, rotate `liftDir` and `dragDir` to align with the flow direction:
+### Stage 6 — `06_run_cfd.py`
+
+GNU parallel over all prepared cases:
+
+```bash
+parallel -j 4 \
+  "cd {1} && source /opt/openfoam12/etc/bashrc && foamRun > log.foamRun 2>&1" \
+  ::: cases/case_*/
 ```
-liftDir = (-sin(alpha), cos(alpha), 0)
-dragDir = ( cos(alpha), sin(alpha), 0)
+
+The Python wrapper logs per-case runtime, captures the parallel job's exit
+status, and re-queues failed cases at lower relaxation (a built-in retry hook
+for Regime B which is most prone to divergence).
+
+### Stage 7 — `07_harvest_results.py`
+
+Per case:
+- Parse `postProcessing/forceCoeffs/0/coefficient.dat` (skip `#`-prefixed lines)
+- Compute mean and std of Cl and Cd over the last 200 rows
+- Parse `log.foamRun` for residual history and any `FOAM FATAL ERROR`
+- Compute achieved y+ from the wall-shear post-processing (function object or
+  `wallShearStress` utility) and store min/mean/max
+- Compute total cell count from `polyMesh/owner`
+- Apply regime-aware convergence criteria (see `CLAUDE.md` §8) and write
+  `case_metadata.json`
+
+Build `dataset_clean.csv` containing only converged cases:
+
+```
+case_id, alpha_deg, Re, thickness, regime, Cl, Cd, L_over_D,
+Cl_std, Cd_std, y_plus_mean, cells, runtime_s, converged
 ```
 
-**Convergence criteria:** Simulation considered converged when:
-- All residuals (Ux, Uy, p, k, omega) < 1e-5 for at least the last 200 iterations
-- Cl and Cd values stable (std over last 200 iters < 0.001)
+### Stage 8 — `08_validate_regimes.py`
 
-**Automation script:** Write `run_all.py` that:
-1. Reads `samples.csv`
-2. For each case: substitutes U, liftDir, dragDir into template `0/U` using Python string templating or `sed`
-3. Calls `foamRun > log.simpleFoam 2>&1` via `subprocess`
-4. Optionally uses `GNU parallel` for concurrent runs: `parallel -j 4 "cd cases/case_{} && foamRun > log.simpleFoam 2>&1" ::: $(seq -w 0 99)`
+Per-regime validation against canonical NACA0012 references. Each regime has
+a small dedicated case set under `validation/regime_{X}/cases/` and the
+script:
 
-**Expected output per case:** `postProcessing/forceCoeffs/0/coefficient.dat` containing time-series of Cl and Cd.
+1. Runs each validation case using the regime's template
+2. Computes Cl, Cd, and (for Phase 2) Cp(x/c)
+3. Compares against reference values stored in
+   `validation/regime_{X}/references/*.csv`
+4. Writes `validation/regime_{X}/report.md` with a pass/fail decision
+
+Reference sources:
+
+| Regime | Reference |
+|---|---|
+| A | Abbott & von Doenhoff, *Theory of Wing Sections*; NASA TMR SA NACA0012 case |
+| B | NASA TMR k-ω SST NACA0012; AGARD experimental data |
+| C | XFOIL with eN transition prediction; experimental low-Re databases |
+| D | NASA TMR SA at Re = 4×10⁶ |
+
+Acceptance tolerance: |ΔCl| ≤ 5%, |ΔCd| ≤ 10%, qualitative Cp match.
+
+### Stage 9 — `09_train_surrogates.py`
+
+Trains four model families on the merged dataset with one-hot regime. Save
+`preprocessor.joblib`, `gp_Cl.joblib`, `gp_Cd.joblib`, `rf_Cl.joblib`,
+`rf_Cd.joblib`, `mlp_Cl.joblib`, `mlp_Cd.joblib`, `krg_Cl.joblib`,
+`krg_Cd.joblib`. Hyperparameters tuned via cross-validation on the training
+set only.
+
+### Stage 10 — `10_global_validation.py`
+
+Final figures and tables:
+
+| Output | Description |
+|---|---|
+| `parity_plots.png` | 4×2 grid (model × output), points colored by regime |
+| `surrogate_metrics.csv` | global + per-regime R², RMSE, MAE for all 8 model-output pairs |
+| `sobol_sensitivity.png` | first-order and total Sobol indices for Cl and Cd |
+| `ood_test.png` | Re = 4×10⁶ sweep (above Regime A's bound, inside D's bound) with all models + GP uncertainty band |
+| `learning_curve.png` | RMSE vs N_train ∈ {10,20,30,40,60,80,120,160} for GP and RF |
+| `stall_extrapolation.png` | Cl vs α ∈ [0°, 18°] with dashed line at α = 16° (training boundary) |
 
 ---
 
-### Stage 5 — Data Harvesting and Cleaning
+## 11. Per-Regime CFD Strategy
 
-**Goal:** Parse all 100 OpenFOAM output directories and build a clean `(X, y)` dataset for surrogate training.
+A summary of the per-regime CFD recipe (full implementation rules in
+`CLAUDE.md` §5, §7, §8):
 
-**Implementation steps:**
-
-1. Write `harvest.py` that loops over all case directories:
-   - Load `params.json` to get (α, Re, t) → this is the input row X
-   - Load `postProcessing/forceCoeffs/0/coefficient.dat`
-   - Check that the file exists and has > 200 time steps
-   - Parse the last 200 rows, compute mean Cl and mean Cd → output row y
-   - Compute std of Cl and Cd over the last 200 rows — flag case if std > 0.005 (not converged)
-
-2. Build a `pandas` DataFrame with columns: `[alpha_deg, Re, thickness, Cl, Cd, LD_ratio, converged]`
-
-3. Filter to keep only `converged == True` rows
-
-4. Save as `dataset_clean.csv`
-
-5. Print a summary: how many cases converged, what % failed, which parameter combinations caused failure (typically high α near stall)
-
-**Expected output:** `dataset_clean.csv` — ideally 90–100 rows. If fewer than 80 training samples survive, re-run failed cases with tighter mesh or more iterations.
-
----
-
-### Stage 6 — Surrogate Training
-
-**Goal:** Train four surrogate models on the same 80 training samples and compare their performance on the 20 held-out test samples.
-
-**Preprocessing:**
-
-- Load `dataset_clean.csv`
-- Use pre-saved `train_idx.npy` and `test_idx.npy` to split (same split every time)
-- Input features: `X = [alpha_deg, Re, thickness]` — shape (N, 3)
-- Targets: `y_Cl = Cl`, `y_Cd = Cd` — train one surrogate per output, or use multi-output where supported
-- Apply `sklearn.preprocessing.StandardScaler` to X — fit on training set only, apply to both train and test
-
-**Model 1 — Gaussian Process (GP / Kriging)**
-
-```python
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import Matern, WhiteKernel, ConstantKernel
-
-kernel = ConstantKernel(1.0) * Matern(nu=2.5) + WhiteKernel(noise_level=1e-5)
-gp = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=10, normalize_y=True)
-gp.fit(X_train_scaled, y_train)
-y_pred, y_std = gp.predict(X_test_scaled, return_std=True)
-```
-
-Key property: returns predictive uncertainty (`y_std`). Higher uncertainty = less confident = should query more CFD runs there.
-
-**Model 2 — Random Forest (RF)**
-
-```python
-from sklearn.ensemble import RandomForestRegressor
-
-rf = RandomForestRegressor(n_estimators=200, max_features='sqrt', random_state=42)
-rf.fit(X_train_scaled, y_train)
-y_pred = rf.predict(X_test_scaled)
-```
-
-Key property: robust to outliers, no hyperparameter sensitivity, built-in feature importance.
-
-**Model 3 — MLP Neural Network**
-
-```python
-from sklearn.neural_network import MLPRegressor
-
-mlp = MLPRegressor(hidden_layer_sizes=(64, 64, 32), activation='relu',
-                   max_iter=2000, early_stopping=True, validation_fraction=0.1,
-                   random_state=42)
-mlp.fit(X_train_scaled, y_train)
-y_pred = mlp.predict(X_test_scaled)
-```
-
-Or use `smt` for KAN if desired (bring over from previous work).
-
-**Model 4 — Radial Basis Function (RBF) / Kriging via smt**
-
-```python
-from smt.surrogate_models import RBF, KRG
-
-rbf = RBF(d0=5)
-rbf.set_training_values(X_train_scaled, y_train)
-rbf.train()
-y_pred = rbf.predict_values(X_test_scaled)
-
-krg = KRG(theta0=[1e-2], print_global=False)
-krg.set_training_values(X_train_scaled, y_train)
-krg.train()
-y_pred_krg = krg.predict_values(X_test_scaled)
-y_std_krg = np.sqrt(krg.predict_variances(X_test_scaled))
-```
-
-**Metrics to compute for every model:**
-
-```python
-from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
-
-r2   = r2_score(y_test, y_pred)
-rmse = mean_squared_error(y_test, y_pred, squared=False)
-mae  = mean_absolute_error(y_test, y_pred)
-```
-
-Report these for both Cl and Cd for all 4 models.
-
----
-
-### Stage 7 — Validation, Comparison, and Limitation Study
-
-**Goal:** Understand not just which model performs best, but *where* and *why* each model fails.
-
-**7.1 Parity plots (predicted vs CFD)**
-
-For each model and each output (Cl, Cd): scatter plot of y_pred vs y_true. Perfect prediction = diagonal line. Systematic bias shows as offset; poor precision shows as scatter. Color points by α to see if failure correlates with angle of attack.
-
-**7.2 Model comparison table**
-
-Produce a table of R², RMSE, MAE for each model × each output. This is your headline result.
-
-**7.3 Sobol sensitivity analysis**
-
-After training the GP (which is cheapest to query), use SALib to compute Sobol indices:
-
-```python
-from SALib.sample import saltelli
-from SALib.analyze import sobol
-
-problem = {
-    'num_vars': 3,
-    'names': ['alpha', 'Re', 'thickness'],
-    'bounds': [[0, 16], [5e5, 3e6], [0.08, 0.24]]
-}
-param_values = saltelli.sample(problem, 1024)
-# scale and predict using the trained GP
-Y = gp.predict(scaler.transform(param_values))
-Si = sobol.analyze(problem, Y)
-# Si['S1'] = first-order indices, Si['ST'] = total-order indices
-```
-
-This tells you which input parameter contributes most to variation in Cl/Cd — expected: α dominates Cl, Re matters more for Cd.
-
-**7.4 Deliberate failure experiments**
-
-These are the most important experiments in the project:
-
-| Experiment | What to do | What to observe |
-|---|---|---|
-| Out-of-distribution (OOD) extrapolation | Query at Re = 4e6 (outside training range) | GP uncertainty spikes; RF/MLP give confident but wrong predictions |
-| Sample starvation | Retrain all models on only 20 samples | All accuracy degrades; GP degrades most gracefully |
-| Near-stall behaviour | Query at α = 14–16° | All models smooth out the nonlinearity; polynomial RSM worst |
-| Physics violation check | Query symmetric aerofoil (t=0.12) at α = 0° | Cl should be ~0; check if surrogate respects this |
-
-**7.5 Learning curve**
-
-Train GP and RF on N = [10, 20, 30, 40, 60, 80] samples each time (random subsets), evaluate on fixed 20-point test set, plot RMSE vs N. This gives the "sample efficiency" answer: how many CFD runs are actually needed?
-
----
-
-### Stage 8 (Stretch Goal) — Active Learning Refinement
-
-**Goal:** Use GP uncertainty to decide *which new CFD simulation to run next* — rather than pre-specifying all 100 samples upfront.
-
-**Method:** Expected Improvement (EI) acquisition function.
-
-**Concept:** After training a GP on the initial dataset, query it over a dense grid of candidate points. The point with the highest uncertainty (highest `y_std`) is the most informative to simulate next. Run CFD at that point, add to the training set, retrain the GP, repeat.
-
-**Implementation steps:**
-
-1. Train initial GP on 30 samples
-2. Generate a candidate grid of 5000 random parameter combinations
-3. Predict `y_mean, y_std` for all candidates using the GP
-4. Select the candidate with maximum `y_std` (pure uncertainty sampling) or maximum Expected Improvement
-5. Add that point to the run queue, execute CFD, harvest Cl/Cd
-6. Retrain GP with the new point added
-7. Repeat for 20 iterations, then compare final GP accuracy vs a GP trained on 50 random LHS samples
-
-**Expected result:** Active learning should reach the same accuracy as random LHS but with fewer CFD runs.
-
----
-
-## 10. Surrogate Comparison Matrix
-
-| Property | Gaussian Process | Random Forest | MLP / KAN | RBF |
+| Property | Regime A | Regime B | Regime C | Regime D |
 |---|---|---|---|---|
-| Uncertainty quantification | Yes (native) | Approximate only | No | No |
-| Works well with small N | Very good | Good | Poor (<100 samples) | Good |
+| Turbulence | `SpalartAllmaras` | `kOmegaSST` | `kkLOmega` | `SpalartAllmaras` |
+| Wall functions | Yes (Spalding) | No (low-Re) | No (low-Re) | Yes (Spalding) |
+| Target y+ | 30 | 0.5 | 0.5 | 50 |
+| Prism layers | 15–20 | 30–40 | 35–45 | 12–18 |
+| Cells | 80k–200k | 300k–1M | 500k–1.2M | 50k–150k |
+| End-time | 2000 | 5000 | 4000 | 2000 |
+| Relaxation (U / p) | 0.7 / 0.3 | 0.5 / 0.2 | 0.5 / 0.2 | 0.7 / 0.3 |
+| `nNonOrth. corr.` | 1 | 2 | 2 | 1 |
+| Cl/Cd std tolerance | 0.005 | 0.010 | 0.005 | 0.005 |
+
+For each regime the template lives in `templates/regime_{X}/` and renders
+only the placeholders relevant to that regime's turbulence model.
+
+---
+
+## 12. Validation Strategy and Phases
+
+Validation is sequenced. **No regime's samples enter the main dataset until
+that regime's template is locked.**
+
+| Phase | Regime | Output | Blocks |
+|---|---|---|---|
+| 1 | A | `validation/regime_A/report.md` | All other phases |
+| 2 | B | `validation/regime_B/report.md` | Phases 5, 6 (for B) |
+| 3 | C | `validation/regime_C/report.md` | Phases 5, 6 (for C) |
+| 4 | D | `validation/regime_D/report.md` | Phases 5, 6 (for D) |
+| 5 | All | `dataset_clean.csv` (200 cases) | Phase 6 |
+| 6 | All | `results/` | — |
+
+**Phase 1 deliverables (Regime A):**
+
+- Validated NACA0012 case set at:
+  - Re = 2×10⁶, α ∈ {0°, 4°, 8°}
+  - Re = 3×10⁶, α = 4°
+- Cl, Cd within ±5%/±10% of Abbott & von Doenhoff and NASA TMR references
+- Mesh independence study: 3 mesh levels (coarse, medium, fine); Cl change < 1% between medium and fine
+- Convergence study: residuals plateau below 1e-5; force coefficients stable to ±0.5%
+- Report committed to `validation/regime_A/report.md`
+
+A regime that fails to validate within reasonable effort is documented as a
+known gap in `regime_validation/report.md` and excluded from the dataset.
+
+---
+
+## 13. Surrogate Training Strategy
+
+### Input encoding
+
+```python
+X = [alpha_deg, Re, thickness, regime_A, regime_B, regime_C, regime_D]  # one-hot regime
+```
+
+Continuous columns are standardized; one-hot columns are passed through.
+The preprocessor is saved to `models/preprocessor.joblib` and is part of the
+model artefact.
+
+### Train/test discipline
+
+The 40 test samples in `test_idx.npy` are sacred:
+
+- Never train on them
+- Never use them to select hyperparameters (use CV on the training set only)
+- Never re-run CFD based on test set performance
+- Report final metrics on the test set exactly once at the end
+
+The split is stratified by regime so every regime is represented in test.
+
+### Models
+
+| Model | Key settings |
+|---|---|
+| GP | `Matern(ν=2.5) + WhiteKernel`, `n_restarts_optimizer=10`, `normalize_y=True` |
+| RF | `n_estimators=200`, `random_state=42` |
+| MLP | `hidden_layer_sizes=(64,64,32)`, ReLU, `early_stopping=True`, `max_iter=2000` |
+| KRG | `smt.surrogate_models.KRG(theta0=[1e-2])` |
+
+One model per output (Cl, Cd), per family — eight models total.
+
+### Reporting
+
+Report global and per-regime R², RMSE, MAE in `results/surrogate_metrics.csv`.
+A model is acceptable when each per-regime R² ≥ 0.90 for Cl and ≥ 0.85 for Cd.
+Global R² alone is misleading because regimes with more samples dominate it.
+
+---
+
+## 14. Surrogate Comparison Matrix
+
+| Property | Gaussian Process | Random Forest | MLP | Kriging (smt) |
+|---|---|---|---|---|
+| Uncertainty quantification | Yes (native) | Approximate (trees) | No | Yes (predict_variances) |
+| Works with small N | Very good | Good | Poor below ~120 samples | Very good |
 | Interpolates exactly | Yes | No | No | Yes |
-| Extrapolation behaviour | Reverts to prior, high uncertainty | Flat (mean of training) | Unpredictable | Diverges |
-| Training cost | O(N³) — slow for N>1000 | Fast | Slow (many epochs) | O(N³) |
+| Extrapolation | Reverts to prior, high std | Flat (mean of training) | Unpredictable | Smooth, low confidence |
+| Training cost | O(N³) — slow above N=1000 | Fast | Slow (many epochs) | O(N³) |
 | Hyperparameter sensitivity | Medium (kernel choice) | Low | High | Low |
-| Multi-output support | Separate models | Multi-output native | Multi-output native | Separate models |
-| Best for this project | Phase 1 primary model | Robust baseline | Comparison (your expertise) | Classical baseline |
+| Regime one-hot tolerance | Handles well | Handles well | Sensitive to scaling | Handles well |
+| Best for this project | Primary uncertainty-aware model | Robust baseline | Comparison | Kriging baseline |
 
 ---
 
-## 11. Known Limitations to Investigate
+## 15. Metadata Schema
 
-These are the failure modes to document — the point of the project is to encounter and quantify them:
+Every case writes `case_metadata.json`:
 
-1. **Stall discontinuity:** Cl drops sharply past stall. RANS itself models this poorly (steady-state diverges or gives non-physical results). Surrogate will smooth over this nonlinearity.
+```json
+{
+  "case_id": "case_0042",
+  "regime": "A",
+  "alpha_deg": 4.123,
+  "Re": 2.1e6,
+  "thickness": 0.12,
 
-2. **Extrapolation:** All surrogates degrade outside the training range. GP at least signals this via high uncertainty. RF and MLP give confidently wrong predictions.
+  "template": "regime_A",
+  "turbulence_model": "SpalartAllmaras",
+  "wall_treatment": "nutUSpaldingWallFunction",
 
-3. **Sample efficiency:** Too few samples → high variance surrogate. Too many → wasted CFD compute. The learning curve experiment (Stage 7.5) quantifies this.
+  "y_plus_target": 30.0,
+  "y_plus_min": 18.4, "y_plus_mean": 31.7, "y_plus_max": 47.2,
 
-4. **Geometry parameterization limit:** NACA 4-digit is a restricted family. A surrogate trained on it cannot generalize to arbitrary aerofoil shapes (NACA 6-series, supercritical, etc.).
+  "cells_total": 142308,
+  "non_orthogonality_max": 38.4,
+  "skewness_max": 1.21,
 
-5. **Physics violations:** The surrogate may predict negative Cd (physically impossible) or non-zero Cl for a symmetric aerofoil at α = 0. Physics-informed approaches (Stage 8+) can address this.
+  "runtime_s": 412.6,
+  "iterations": 2000,
+  "residuals_final": {"Ux": 3.1e-6, "Uy": 4.8e-6, "p": 7.2e-6, "nuTilda": 9.1e-7},
 
-6. **RANS model error:** The training data itself has error (RANS underpredicts separation, LES/DNS would give different Cl/Cd). The surrogate inherits and potentially amplifies this error.
+  "Cl_mean": 0.456, "Cl_std": 0.0012,
+  "Cd_mean": 0.0098, "Cd_std": 0.00008,
+  "L_over_D": 46.5,
+
+  "converged": true, "ood": false,
+  "notes": ""
+}
+```
+
+The dataset CSV is the joined projection of all `case_metadata.json` files;
+the per-case JSON is the source of truth for everything else.
 
 ---
 
-## 12. Directory Structure
+## 16. Risk Register
+
+| # | Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|---|
+| 1 | Regime B (near-stall) does not converge in steady RANS | High | Lose 25% of dataset | Tighter relaxation; longer end-time; URANS as fallback; document failures rather than fake data |
+| 2 | `kkLOmega` unavailable in the local OpenFOAM 12 build | Medium | Regime C blocked | Fall back to `kOmegaSST` with low Tu and 0.1% turbulence intensity; log the substitution in metadata |
+| 3 | Validation references for low-Re NACA0012 are sparse | Medium | Phase 3 hard to lock | Cross-check against XFOIL with eN transition prediction |
+| 4 | Compute budget — Regime B/C cases at 1M cells × 50 samples = ~1500 core-hours | Medium | Long wall-clock time | Cap parallel jobs; budget per regime; checkpoint runs |
+| 5 | One-hot regime collinearity (sum-to-one) for linear submodels | Low | Numerical instability in some sklearn models | Drop one column for OLS-like models; not a problem for GP/RF/MLP/KRG |
+| 6 | Stratified split too small in Regime C (6 test samples) | Medium | Noisy per-regime metric | Report Regime C metrics with confidence intervals; bootstrap |
+| 7 | Mesh independence not established for Regime D's coarse mesh | Medium | Systematic bias in D | Run 3-mesh study in Phase 4 validation |
+| 8 | Classifier ambiguity for points between regime boxes | Low | Wrong template used for OOD query | `ood` flag in metadata; refuse to write a CFD case for OOD points |
+| 9 | Random seed leakage during CV hyperparameter search | Low | Test set contamination | Code review of `09_train_surrogates.py`; CI test that test indices never reach `fit` |
+| 10 | Sample exhaustion in active-learning loop | Low | Budget overrun in Phase 8 (future) | Pre-set max iterations; require manual approval to extend |
+
+---
+
+## 17. Known Limitations
+
+These are the failure modes the project is set up to encounter and document:
+
+1. **Stall discontinuity.** Cl drops sharply past stall. Steady RANS itself
+   models this poorly; the surrogate cannot recover information that is not
+   in the training data.
+
+2. **Extrapolation.** All surrogates degrade outside the training envelope.
+   GP signals it via high uncertainty; RF and MLP do not.
+
+3. **Sample efficiency.** Too few samples → high variance surrogate. Too many
+   → wasted CFD compute. The learning-curve experiment (Stage 10) quantifies
+   this per regime.
+
+4. **Geometry parameterization limit.** NACA 4-digit is a restricted family.
+   A surrogate trained on it cannot generalize to NACA 6-series, supercritical,
+   or arbitrary aerofoils. Phase 2 adds camber `(m, p)` parameters.
+
+5. **Physics violations.** The surrogate may predict negative Cd or non-zero
+   Cl for a symmetric aerofoil at α = 0°. Physics-informed approaches are
+   future work.
+
+6. **RANS error inherited by the surrogate.** Training data has its own error
+   (RANS underpredicts separation, LES/DNS would give different Cl/Cd). The
+   surrogate inherits and potentially amplifies this error. Each regime's
+   validation report (`validation/regime_X/report.md`) documents the
+   expected CFD error envelope for that regime.
+
+7. **Regime-boundary smoothness.** The one-hot encoding produces a piecewise
+   model that may exhibit discontinuities at regime boundaries. This is
+   monitored in Stage 10 via cross-regime probe sweeps.
+
+---
+
+## 18. Directory Structure
 
 ```
-aerofoil_surrogate/
-├── README.md                     ← this file
-├── samples.csv                   ← DOE output (100 × 3)
-├── train_idx.npy                 ← indices of 80 training samples
-├── test_idx.npy                  ← indices of 20 test samples
-├── dataset_clean.csv             ← harvested CFD results
+NACASurrogate/
+├── README.md                     ← quick design summary
+├── README_complete.md            ← this file
+├── CLAUDE.md                     ← LLM operating manual
+├── environment.yml
+├── samples.csv                   ← 200 × [case_id, alpha_deg, Re, thickness, regime]
+├── train_idx.npy                 ← 160 stratified training indices
+├── test_idx.npy                  ← 40 stratified test indices
+├── dataset_clean.csv             ← harvested converged CFD results
 │
 ├── scripts/
-│   ├── 01_doe.py                 ← Stage 1: LHS sampling
-│   ├── 02_geometry.py            ← Stage 2: NACA profile generation
-│   ├── 03_mesh.py                ← Stage 3: gmsh mesh generation
-│   ├── 04_run_cfd.py             ← Stage 4: OpenFOAM case setup + submission
-│   ├── 05_harvest.py             ← Stage 5: data harvesting + cleaning
-│   ├── 06_train_surrogates.py    ← Stage 6: train all 4 models
-│   ├── 07_validate.py            ← Stage 7: metrics, plots, sensitivity
-│   └── 08_active_learning.py     ← Stage 8 (stretch)
+│   ├── 01_generate_doe.py
+│   ├── 02_classify_regime.py
+│   ├── 03_generate_geometry.py
+│   ├── 04_generate_mesh.py
+│   ├── 05_prepare_case.py
+│   ├── 06_run_cfd.py
+│   ├── 07_harvest_results.py
+│   ├── 08_validate_regimes.py
+│   ├── 09_train_surrogates.py
+│   └── 10_global_validation.py
 │
-├── openfoam_template/            ← master OpenFOAM case (copy-and-modify)
-│   ├── 0/
-│   │   ├── U.template
-│   │   ├── p
-│   │   ├── k
-│   │   ├── omega
-│   │   └── nut
-│   ├── constant/
-│   │   └── momentumTransport
-│   └── system/
-│       ├── controlDict.template
-│       ├── fvSchemes
-│       └── fvSolution
+├── templates/                    ← regime-specific OpenFOAM templates (Jinja2)
+│   ├── regime_A/
+│   ├── regime_B/
+│   ├── regime_C/
+│   └── regime_D/
 │
-├── cases/                        ← auto-generated, one dir per sample
-│   ├── case_0000/
-│   ├── case_0001/
-│   └── ...
+├── validation/
+│   ├── regime_A/{cases/, references/, report.md}
+│   ├── regime_B/{cases/, references/, report.md}
+│   ├── regime_C/{cases/, references/, report.md}
+│   └── regime_D/{cases/, references/, report.md}
 │
-├── results/
-│   ├── surrogate_metrics.csv     ← R², RMSE, MAE for all models
-│   ├── parity_plots/
-│   ├── sobol_indices.csv
-│   └── learning_curve.png
+├── cases/                        ← auto-generated, gitignored
+│   └── case_NNNN/
+│       ├── aerofoil.dat
+│       ├── params.json
+│       ├── case_metadata.json
+│       └── <OpenFOAM case>
 │
-└── models/
-    ├── gp_Cl.pkl
-    ├── gp_Cd.pkl
-    ├── rf_Cl.pkl
-    ├── rf_Cd.pkl
-    ├── mlp_Cl.pkl
-    ├── mlp_Cd.pkl
-    └── scaler.pkl
+├── models/                       ← joblib artefacts
+│   ├── preprocessor.joblib
+│   ├── gp_Cl.joblib  / gp_Cd.joblib
+│   ├── rf_Cl.joblib  / rf_Cd.joblib
+│   ├── mlp_Cl.joblib / mlp_Cd.joblib
+│   └── krg_Cl.joblib / krg_Cd.joblib
+│
+└── results/
+    ├── regime_validation/        ← per-regime CFD validation reports
+    ├── surrogate_metrics.csv     ← global + per-regime metrics
+    ├── parity_plots.png
+    ├── sobol_sensitivity.png
+    ├── ood_test.png
+    ├── learning_curve.png
+    └── stall_extrapolation.png
 ```
 
 ---
 
-## 13. LLM Coding Prompts Per Stage
+## 19. Implementation Sequence
 
-Use these prompts to generate the code for each stage. Feed them one at a time.
+The project is built phase by phase. Each phase has a definite deliverable.
 
----
+### Phase 1 — Regime A lock (active)
 
-**Prompt for Stage 1 — DOE:**
-```
-Write a Python script `01_doe.py` that uses pyDOE2 to generate a Latin Hypercube Sample 
-of 100 points over 3 parameters: angle of attack (0 to 16 degrees), Reynolds number 
-(5e5 to 3e6), and aerofoil thickness (0.08 to 0.24 as fraction of chord). Scale the 
-unit LHS array to physical ranges. Save the full sample as `samples.csv` with columns 
-[alpha_deg, Re, thickness]. Also randomly assign 80 samples to training and 20 to test, 
-saving the indices as `train_idx.npy` and `test_idx.npy`. Set random seed = 42.
-```
+1. Build `templates/regime_A/` from `$FOAM_TUTORIALS/incompressibleFluid/airFoil2D/` and `fluid/aerofoilNACA0012Steady/` reference cases
+2. Write `04_generate_mesh.py` (Regime A branch only) with y+ = 30 target
+3. Write `05_prepare_case.py` (Regime A branch only) — Jinja2 render of SA-specific fields
+4. Run NACA0012 validation cases: Re = 2×10⁶ at α ∈ {0°, 4°, 8°} and Re = 3×10⁶ at α = 4°
+5. Mesh independence study (coarse, medium, fine)
+6. Write `validation/regime_A/report.md`
+7. **Gate:** every validation case within ±5%/±10% of reference Cl/Cd
 
----
+### Phase 2 — Regime B lock
 
-**Prompt for Stage 2 — Geometry:**
-```
-Write a Python script `02_geometry.py` that:
-1. Defines a function `naca4(t, m=0, p=0, n_points=200)` implementing the NACA 4-digit 
-   analytic formula. Use cosine spacing for x/c. Return (x_upper, y_upper, x_lower, 
-   y_lower) as numpy arrays, normalized to chord = 1.0.
-2. Reads `samples.csv`.
-3. For each row, generates the aerofoil coordinates using naca4(t=row['thickness']).
-4. Creates directory `cases/case_{i:04d}/`.
-5. Writes `cases/case_{i:04d}/aerofoil.dat` as a two-column space-separated file of x y 
-   coordinates: upper surface from TE to LE, then lower surface from LE to TE (closed 
-   polygon for meshing).
-6. Writes `cases/case_{i:04d}/params.json` with the parameter values for that case.
-```
+1. Build `templates/regime_B/` from `fluid/aerofoilNACA0012Steady/`
+2. Extend `04_generate_mesh.py` with the Regime B branch (y+ = 0.5, dense prism layers)
+3. Extend `05_prepare_case.py` to handle kOmegaSST templates
+4. Run NACA0012 validation cases: Re = 2×10⁶ at α ∈ {12°, 14°, 16°}
+5. Mesh and convergence studies
+6. Document Regime B in its report
 
----
+### Phase 3 — Regime C lock
 
-**Prompt for Stage 3 — Meshing:**
-```
-Write a Python script `03_mesh.py` using the gmsh Python API that:
-1. Defines a function `build_mesh(aerofoil_dat_path, Re, output_dir, chord=1.0, 
-   y_plus_target=0.5, nu=1.5e-5)`.
-2. Computes the required first cell height for the target y+ using the flat-plate 
-   turbulent boundary layer approximation (Cf = 0.026/Re^(1/7)).
-3. Reads aerofoil coordinates from the .dat file.
-4. Creates a 2D C-mesh in gmsh: domain extends 20c upstream, 30c downstream, 20c 
-   transverse. Spline curves for upper and lower aerofoil surfaces.
-5. Sets gmsh mesh size fields: fine near the aerofoil (first cell height from step 2), 
-   coarse in the far field (~2c).
-6. Generates 2D mesh, writes to `{output_dir}/mesh.msh`.
-7. Converts to OpenFOAM format using a subprocess call to `gmshToFoam mesh.msh`.
-8. Runs `checkMesh` via subprocess and returns True/False based on whether 
-   max non-orthogonality < 70 and max skewness < 4.
-Reads `samples.csv` and loops over all 100 cases.
-```
+1. Build `templates/regime_C/` for `kkLOmega` (or fallback)
+2. Extend `04_generate_mesh.py` with the Regime C branch
+3. Extend `05_prepare_case.py` to handle transition templates
+4. Run low-Re NACA0012 validation: Re = 5×10⁵ at α ∈ {2°, 4°, 6°}
+5. Compare to XFOIL eN predictions and experimental low-Re databases
+
+### Phase 4 — Regime D lock
+
+1. Build `templates/regime_D/` (SA + wall functions, coarse mesh)
+2. Extend `04_generate_mesh.py` with the Regime D branch
+3. Run NASA TMR Re = 4×10⁶ validation
+
+### Phase 5 — Full dataset
+
+1. Run `01_generate_doe.py` → `samples.csv`
+2. Run `03–06` over all 200 samples in parallel
+3. Run `07_harvest_results.py` → `dataset_clean.csv`
+4. Audit: every case must have a `case_metadata.json` with `converged=true`
+   OR a documented reason in the report
+
+### Phase 6 — Surrogate
+
+1. `09_train_surrogates.py` — train 8 models on 160 training samples
+2. `10_global_validation.py` — full figure suite
+3. Audit per-regime metrics; document gaps
 
 ---
 
-**Prompt for Stage 4 — CFD Setup and Run:**
-```
-Write a Python script `04_run_cfd.py` that:
-1. Reads `samples.csv`.
-2. Copies the OpenFOAM template from `openfoam_template/` to `cases/case_{i:04d}/`.
-3. For each case, computes:
-   - U_inf = Re * nu / chord  (nu=1.5e-5, chord=1.0)
-   - Ux = U_inf * cos(alpha_rad), Uy = U_inf * sin(alpha_rad)
-   - liftDir = (-sin(alpha_rad), cos(alpha_rad), 0)
-   - dragDir = (cos(alpha_rad), sin(alpha_rad), 0)
-4. Substitutes these into `0/U.template` and `system/controlDict.template` using 
-   Python string .replace() or a Jinja2 template. Saves as `0/U` and `system/controlDict`.
-5. Writes a bash script `run_all.sh` that uses GNU parallel to run up to 4 cases 
-   simultaneously: `parallel -j 4 "cd cases/case_{} && foamRun > log.simpleFoam 2>&1"`.
-Also write the OpenFOAM template files needed:
-- `0/U.template` with ALPHA, UX, UY, LIFTDIR, DRAGDIR as placeholders
-- `system/controlDict.template` with forceCoeffs function object, UINF placeholder, 
-  liftDir and dragDir placeholders. Include writeInterval 50, endTime 2000.
-- `constant/momentumTransport` using kOmegaSST
-- `system/fvSchemes` and `system/fvSolution` appropriate for steady `incompressibleFluid`
-  external 
-  aerodynamics (second-order schemes, SIMPLE algorithm, relaxation factors 0.5/0.5/0.7).
-```
+## 20. Future Extensions
+
+In rough order of value:
+
+1. **Cp surrogate.** Sample Cp(x/c) on the aerofoil patch via `singleGraph`,
+   compress with POD (5–10 modes), train a separate Cp surrogate. Provides
+   the full pressure distribution for downstream design tools.
+2. **Active learning.** Use GP uncertainty (or KRG variance) to query the most
+   informative next CFD point. Implement Expected Improvement acquisition;
+   compare to passive LHS.
+3. **Camber parameters.** Phase 2 adds `m` (max camber) and `p` (camber
+   position) to the design space, scaling samples to 400–500 LHS points.
+4. **Multi-fidelity surrogate.** Combine cheap XFOIL evaluations with
+   expensive OpenFOAM evaluations using co-kriging (smt's MFK).
+5. **URANS for Regime B.** When steady RANS fails to converge near stall,
+   fall back to URANS with time-averaged Cl/Cd. Marks the case with a fidelity
+   flag in metadata.
+6. **Physics-informed regularization.** Constrain the surrogate to satisfy
+   Cl(α=0; symmetric) = 0 and Cd > 0 either via PINN-style penalties or via
+   post-hoc projection.
+7. **Classification-assisted surrogate.** Train a soft regime classifier
+   (logistic regression or small NN) on `(α, Re, t)` and use its probabilities
+   to weight per-regime expert models, replacing the hard one-hot.
+8. **3D extension.** Move from 2D infinite-wing to 3D finite-wing with sweep,
+   taper, and twist parameters — requires complete pipeline rewrite for
+   surface meshing.
 
 ---
 
-**Prompt for Stage 5 — Data Harvesting:**
-```
-Write a Python script `05_harvest.py` that:
-1. Reads `samples.csv` to get the input parameters for each case.
-2. For each case directory `cases/case_{i:04d}/`:
-   a. Checks if `postProcessing/forceCoeffs/0/coefficient.dat` exists.
-   b. Loads the file (columns: Time, Cm, Cd, Cl, CdPressure, CdViscous, ...) — handle 
-      OpenFOAM's comment lines starting with #.
-   c. Checks the file has > 200 time steps.
-   d. Takes the last 200 rows, computes mean and std of Cl and Cd.
-   e. Marks case as converged if std(Cl) < 0.005 AND std(Cd) < 0.005.
-3. Builds a pandas DataFrame with columns: 
-   [case_id, alpha_deg, Re, thickness, Cl_mean, Cd_mean, Cl_std, Cd_std, 
-    LD_ratio, converged].
-4. Prints a convergence summary: total cases, converged cases, failed cases with their 
-   parameter values.
-5. Saves the full DataFrame as `dataset_all.csv` and the converged subset as 
-   `dataset_clean.csv`.
-```
-
----
-
-**Prompt for Stage 6 — Surrogate Training:**
-```
-Write a Python script `06_train_surrogates.py` that:
-1. Loads `dataset_clean.csv`, `train_idx.npy`, `test_idx.npy`.
-2. Builds X (alpha_deg, Re, thickness) and y_Cl, y_Cd arrays.
-3. Splits into train and test using the saved indices.
-4. Fits a StandardScaler on X_train, applies to both X_train and X_test. Saves the 
-   scaler as `models/scaler.pkl`.
-5. Trains four models for Cl prediction and four for Cd prediction:
-   - GaussianProcessRegressor with Matern(nu=2.5) + WhiteKernel kernel, 
-     n_restarts_optimizer=10, normalize_y=True. Save as `models/gp_Cl.pkl`.
-   - RandomForestRegressor with n_estimators=200, random_state=42. Save as 
-     `models/rf_Cl.pkl`.
-   - MLPRegressor with hidden_layer_sizes=(64, 64, 32), relu, early_stopping=True. 
-     Save as `models/mlp_Cl.pkl`.
-   - smt KRG (Kriging) model: `from smt.surrogate_models import KRG`. Save as 
-     `models/krg_Cl.pkl` using pickle.
-6. For each model × each output, compute R², RMSE, MAE on the test set.
-7. Print and save a results table as `results/surrogate_metrics.csv`.
-8. For the GP models, also report mean predictive uncertainty on the test set.
-```
-
----
-
-**Prompt for Stage 7 — Validation and Limitation Study:**
-```
-Write a Python script `07_validate.py` that produces the following plots and analyses, 
-saving all figures to `results/`:
-
-1. PARITY PLOTS: For each of 4 models × 2 outputs (Cl, Cd): scatter plot of predicted 
-   vs CFD truth, with the diagonal line, R² in the title, points colored by alpha_deg. 
-   Arrange as a 4×2 grid. Save as `results/parity_plots.png`.
-
-2. SOBOL SENSITIVITY: Using SALib, sample 8192 points with the saltelli sampler over 
-   the training ranges. Predict with the trained GP. Compute and plot first-order and 
-   total Sobol indices for Cl and Cd. Save as `results/sobol_sensitivity.png`.
-
-3. OUT-OF-DISTRIBUTION TEST: Create a 1D sweep at fixed Re=4e6 (outside training range), 
-   alpha=0:16, thickness=0.12. Predict with all 4 models. For GP, also plot the 
-   uncertainty band (mean ± 2*std). Show how models diverge outside the training range. 
-   Save as `results/ood_test.png`.
-
-4. SAMPLE EFFICIENCY (learning curve): For N_train in [10, 20, 30, 40, 60, 80], 
-   randomly subsample N_train points from the full training set (5 different random 
-   seeds each), train GP and RF, evaluate on the fixed test set, record RMSE. Plot 
-   RMSE vs N_train for both models with error bars (std over seeds). 
-   Save as `results/learning_curve.png`.
-
-5. NEAR-STALL ANALYSIS: Create a sweep at alpha = 0:18 degrees (extending slightly 
-   beyond training), Re=1e6, thickness=0.12. Plot predicted Cl vs alpha for all 4 
-   models. Mark the training boundary at alpha=16 with a dashed vertical line. 
-   Save as `results/stall_extrapolation.png`.
-```
-
----
-
-*End of documentation. Each Stage prompt above is self-contained and can be fed directly to an LLM to generate the implementation code.*
+*End of documentation.*
