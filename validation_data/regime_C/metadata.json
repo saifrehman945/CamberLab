@@ -1,0 +1,108 @@
+{
+  "regime_id": "C",
+  "name": "Transitional low-Re",
+  "physics": "Laminar boundary layer, transition, laminar separation bubbles",
+  "design_space": {
+    "alpha_deg": [0, 8],
+    "Re": [3.0e5, 1.0e6],
+    "thickness": [0.08, 0.15]
+  },
+  "cfd_recipe": {
+    "turbulence_model": "kkLOmega",
+    "fallback_turbulence_model": "kOmegaSST",
+    "fallback_inlet_turbulence_intensity_pct": 0.1,
+    "wall_treatment": "fully_resolved",
+    "wall_function_nut": "nutLowReWallFunction",
+    "y_plus_target": 0.5,
+    "y_plus_acceptable_range": [0.1, 1.0],
+    "prism_layers": [35, 45],
+    "cells_total": [500000, 1200000],
+    "end_time_iterations": 4000
+  },
+  "validation_cases": [
+    {
+      "case_id": "naca0012_re5e5_aoa0_kkl",
+      "airfoil": "NACA 0012",
+      "thickness": 0.12,
+      "Re": 5.0e5,
+      "Mach": 0.05,
+      "alpha_deg": 0.0,
+      "primary_role": "template_lock",
+      "notes": "No canonical NASA TMR low-Re NACA0012 case exists. Reference is generated from XFOIL with eN transition (n_crit=9 for clean tunnel) via scripts/validation/generate_xfoil_reference.py. Treat the XFOIL value as an engineering reference, not as ground truth.",
+      "references": {
+        "engineering_reference": {
+          "label": "XFOIL eN, n_crit=9, viscous, Re=5e5",
+          "tool": "xfoil",
+          "version_pinned": false,
+          "expected_file": "regime_C/raw/xfoil_naca0012_re5e5_aoa0.dat",
+          "expected_columns": ["x_c", "Cp"],
+          "expected_summary_file": "regime_C/raw/xfoil_naca0012_re5e5_polar.csv",
+          "expected_summary_columns": ["alpha_deg", "Cl", "Cd", "Cm", "x_trans_top", "x_trans_bottom"],
+          "tolerance_note": "Expected Cl ≈ 0.0 (symmetric, α=0); Cd ≈ 0.0085–0.0110 depending on transition location. Generated locally — re-run the XFOIL script to refresh."
+        }
+      }
+    },
+    {
+      "case_id": "naca0012_re5e5_aoa4_kkl",
+      "airfoil": "NACA 0012",
+      "thickness": 0.12,
+      "Re": 5.0e5,
+      "Mach": 0.05,
+      "alpha_deg": 4.0,
+      "primary_role": "operating_range",
+      "notes": "Laminar separation bubble expected on upper surface. Compare Cl, Cd, and transition location against XFOIL eN.",
+      "references": {
+        "engineering_reference": {
+          "label": "XFOIL eN, n_crit=9, Re=5e5, α=4°",
+          "tool": "xfoil",
+          "expected_file": "regime_C/raw/xfoil_naca0012_re5e5_aoa4.dat",
+          "expected_columns": ["x_c", "Cp"]
+        }
+      }
+    },
+    {
+      "case_id": "naca0012_re5e5_aoa6_kkl",
+      "airfoil": "NACA 0012",
+      "thickness": 0.12,
+      "Re": 5.0e5,
+      "Mach": 0.05,
+      "alpha_deg": 6.0,
+      "primary_role": "operating_range",
+      "references": {
+        "engineering_reference": {
+          "label": "XFOIL eN, n_crit=9, Re=5e5, α=6°",
+          "tool": "xfoil",
+          "expected_file": "regime_C/raw/xfoil_naca0012_re5e5_aoa6.dat",
+          "expected_columns": ["x_c", "Cp"]
+        }
+      }
+    }
+  ],
+  "additional_references": [
+    {
+      "label": "NASA TMR 2D T3A transitional flat plate",
+      "purpose": "transition model verification (not airfoil)",
+      "url": "https://tmbwg.github.io/turbmodels/t3_transition_mainpage.html"
+    },
+    {
+      "label": "Sheldahl & Klimas, Sandia SAND80-2114, 1981",
+      "purpose": "tabulated low-Re aerodynamic data for symmetric NACA airfoils (transcribe manually if used)"
+    }
+  ],
+  "tolerances": {
+    "delta_Cl_pct": 15.0,
+    "delta_Cd_pct": 20.0,
+    "transition_x_c_tol": 0.10,
+    "cp_pointwise_max_pct": 25.0
+  },
+  "mesh_convergence_levels": [
+    {"label": "coarse", "scale": 0.5, "approx_cells": 300000},
+    {"label": "medium", "scale": 1.0, "approx_cells": 700000},
+    {"label": "fine",   "scale": 2.0, "approx_cells": 1200000}
+  ],
+  "citations": [
+    "Drela, M., XFOIL: An Analysis and Design System for Low Reynolds Number Airfoils, 1989",
+    "Walters & Cokljat, J. Fluids Eng. 130, 2008 (kkLOmega model)",
+    "Langtry & Menter, AIAA J. 47(12), 2009 (γ-Reθ transition SST)"
+  ]
+}

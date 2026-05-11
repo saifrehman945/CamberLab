@@ -1,0 +1,108 @@
+{
+  "regime_id": "D",
+  "name": "Fully turbulent high-Re attached",
+  "physics": "Fully turbulent attached flow, minimal transition, minimal separation",
+  "design_space": {
+    "alpha_deg": [0, 6],
+    "Re": [2.0e6, 5.0e6],
+    "thickness": [0.10, 0.18]
+  },
+  "cfd_recipe": {
+    "turbulence_model": "SpalartAllmaras",
+    "wall_treatment": "wall_functions",
+    "wall_function_nut": "nutkWallFunction",
+    "y_plus_target": 50.0,
+    "y_plus_acceptable_range": [30, 80],
+    "prism_layers": [12, 18],
+    "cells_total": [50000, 150000],
+    "end_time_iterations": 2000
+  },
+  "validation_cases": [
+    {
+      "case_id": "naca0012_re6e6_aoa0_sa_coarse",
+      "airfoil": "NACA 0012",
+      "thickness": 0.12,
+      "Re": 6.0e6,
+      "Mach": 0.15,
+      "alpha_deg": 0.0,
+      "primary_role": "template_lock",
+      "notes": "Same canonical NASA TMR case as Regime A α=0°, but run with Regime D's coarse wall-function mesh (y+~50). Verifies that the cheaper template still recovers Cd to within tolerance for fully turbulent attached flow.",
+      "references": {
+        "experimental_primary": {
+          "label": "Ladson tripped (Re=6e6, 80-grit, α=0°)",
+          "Cl": 0.0,
+          "Cd": 0.00809,
+          "alpha_table_value": -0.05,
+          "alpha_match_tol_deg": 0.1,
+          "file": "common/CLCD_Ladson_expdata.dat"
+        },
+        "cfd_reference": {
+          "label": "CFL3D + SA (Re=6e6, α=0°)",
+          "Cl": -6.86e-6,
+          "Cd": 0.008192,
+          "file_clcd": "common/n0012clcd_cfl3d_sa.dat",
+          "file_cp": "common/n0012cp_cfl3d_sa.dat",
+          "cp_zone": "alpha=0"
+        },
+        "cross_validation": {
+          "label": "Flow360 SA (Re=6e6, α=0°)",
+          "Cl": -8.648e-7,
+          "Cd": 0.00808
+        }
+      }
+    },
+    {
+      "case_id": "naca0012_re6e6_aoa4_sa_coarse",
+      "airfoil": "NACA 0012",
+      "thickness": 0.12,
+      "Re": 6.0e6,
+      "Mach": 0.15,
+      "alpha_deg": 4.0,
+      "primary_role": "operating_range",
+      "notes": "Upper end of Regime D's α range with wall functions. Tests whether the coarse mesh maintains accuracy through moderate lift.",
+      "references": {
+        "experimental_primary": {
+          "label": "Ladson tripped (Re=6e6, α=4.04°)",
+          "Cl": 0.4316,
+          "Cd": 0.00823,
+          "alpha_table_value": 4.04,
+          "alpha_match_tol_deg": 0.1,
+          "file": "common/CLCD_Ladson_expdata.dat"
+        }
+      }
+    },
+    {
+      "case_id": "naca0012_re3e6_aoa4_sa_coarse",
+      "airfoil": "NACA 0012",
+      "thickness": 0.12,
+      "Re": 3.0e6,
+      "Mach": 0.1,
+      "alpha_deg": 4.0,
+      "primary_role": "regime_D_to_A_overlap",
+      "notes": "Re=3e6 sits on the boundary between A and D. Run with both templates and compare to verify the classifier choice is sensible.",
+      "references": {
+        "experimental_primary": {
+          "label": "Gregory & O'Reilly Cl (Re=3e6, α≈4°, digitized)",
+          "file": "common/CL_Gregory_expdata.dat",
+          "url": "https://tmbwg.github.io/turbmodels/NACA0012_validation/CL_Gregory_expdata.dat"
+        }
+      }
+    }
+  ],
+  "tolerances": {
+    "delta_Cl_pct": 5.0,
+    "delta_Cd_pct": 10.0,
+    "cp_pointwise_max_pct": 15.0
+  },
+  "mesh_convergence_levels": [
+    {"label": "coarse", "scale": 0.5, "approx_cells": 30000},
+    {"label": "medium", "scale": 1.0, "approx_cells": 80000},
+    {"label": "fine",   "scale": 2.0, "approx_cells": 150000}
+  ],
+  "citations": [
+    "Ladson, NASA TM 4074, 1988",
+    "Gregory & O'Reilly, ARC R&M 3726, 1970",
+    "CFL3D + SA on NASA TMR, https://tmbwg.github.io/turbmodels/naca0012_val_sa.html",
+    "Flow360 NACA 0012 SA validation, Flexcompute"
+  ]
+}
