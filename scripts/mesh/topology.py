@@ -1,71 +1,92 @@
 """
-Structured C+H 6-block transfinite mesh for a NACA airfoil (Regime A).
+Structured C+H 6-block transfinite mesh for a NACA airfoil (Regime A) with
+a blunt trailing edge.
 
 Topology
 ========
 
-Six transfinite quad blocks. A short "transition wake" block sits between
+Six transfinite quad blocks. The airfoil is truncated at x = te_chord_fraction
+so the trailing edge has a finite half-thickness h_te (NACA-4 thickness
+evaluated at the truncation x). The blunt back is a wall, split into
+upper (TE_UP -> TE_MID) and lower (TE_MID -> TE_LO) halves. The wake
+centreline starts at TE_MID. A short "transition wake" block sits between
 the airfoil-side blocks and the main wake blocks; it inherits the airfoil's
-TE chordwise spacing on its west face and grades outward to the main wake's
-spacing on its east face, eliminating the cell-size cliff at TE that produces
-skewed cells in a plain 4-block C-grid.
+TE chordwise spacing on its south face and grades outward to the main wake's
+spacing on its east face. Its west face is COMPOUND: the (tall) wall-normal
+seam te_nu/te_nl above/below the blunt corner, plus the (short) blunt-back
+half. The compound side has two segments but only 4 transfinite corners, so
+gmsh still meshes it as a structured quad with consistent (i,j) parametrics.
 
-                                F_TOP_OUT
-                                    |
-                                    | (main wake top)
-                                    |
-                F_TOP_MID - F_TOP_TE  -- T_TOP -- F_TOP_OUT
+                F_TOP_MID -- F_TOP_TE  -- T_TOP -- F_TOP_OUT
                   /            |          |          |
                  /             |          |          |
                 / Block U    UTW         UMW         |
-   F_LE_FAR -- + -airfoil--  TE_AF ---- T_MID --- OUT_MID
-                \\ Block L    LTW         LMW         |
-                 \\            |          |          |
-                  \\           |          |          |
-                F_BOT_MID - F_BOT_TE  -- T_BOT -- F_BOT_OUT
+   F_LE_FAR --                |          |          |
+                / airfoil --  TE_UP +                |
+                              |    \                 |
+                              | (BB up)              |
+                              TE_MID -- T_MID --- OUT_MID
+                              | (BB lo)              |
+                              |    /                 |
+                / airfoil --  TE_LO +                |
+                \\             |          |          |
+                 \\ Block L   LTW         LMW         |
+                  \\          |          |          |
+                F_BOT_MID -- F_BOT_TE  -- T_BOT -- F_BOT_OUT
 
 Curve direction conventions (start -> end)
 ------------------------------------------
-  Airfoil & farfield (unchanged from 4-block):
-    C_af_up    : LE_AF  -> TE_AF       (upper airfoil spline)
-    C_af_lo    : LE_AF  -> TE_AF       (lower airfoil spline)
+  Airfoil:
+    C_af_up      : LE_AF  -> TE_UP    (upper airfoil spline; ends at blunt TE corner)
+    C_af_lo      : LE_AF  -> TE_LO    (lower airfoil spline; ends at blunt TE corner)
+    C_te_blunt_up: TE_UP  -> TE_MID   (upper half of blunt back; AIRFOIL wall)
+    C_te_blunt_lo: TE_MID -> TE_LO    (lower half of blunt back; AIRFOIL wall)
+
+  Farfield:
     C_arc_up   : LE_FAR -> TOP_MID
     C_arc_lo   : LE_FAR -> BOT_MID
     C_top_h    : TOP_MID -> TOP_TE
     C_bot_h    : BOT_MID -> BOT_TE
     C_outU     : TOP_OUT -> OUT_MID
     C_outL     : OUT_MID -> BOT_OUT
-    C_le_rad   : LE_FAR -> LE_AF
-    C_te_nu    : TE_AF  -> TOP_TE
-    C_te_nl    : TE_AF  -> BOT_TE
-
-  Wake split (NEW):
-    C_wake_trans : TE_AF  -> T_MID     (transition block, wake centreline)
-    C_wake_main  : T_MID  -> OUT_MID   (main block, wake centreline)
     C_top_trans  : TOP_TE -> T_TOP
     C_top_main   : T_TOP  -> TOP_OUT
     C_bot_trans  : BOT_TE -> T_BOT
     C_bot_main   : T_BOT  -> BOT_OUT
-    C_t_seam_up  : T_MID  -> T_TOP     (vertical seam at transition->main interface)
+
+  Internal seams (interior to the fluid domain):
+    C_le_rad     : LE_FAR -> LE_AF
+    C_te_nu      : TE_UP  -> TOP_TE   (vertical seam above blunt corner)
+    C_te_nl      : TE_LO  -> BOT_TE   (vertical seam below blunt corner)
+    C_wake_trans : TE_MID -> T_MID    (wake centreline, transition block)
+    C_wake_main  : T_MID  -> OUT_MID  (wake centreline, main block)
+    C_t_seam_up  : T_MID  -> T_TOP    (seam at transition->main interface)
     C_t_seam_lo  : T_MID  -> T_BOT
 
 Block loops (signed curve tags, CCW with interior on the left)
 --------------------------------------------------------------
-  Block U   : [+af_up,    +te_nu,     -top_h,       -arc_up,      +le_rad]
-  Block L   : [+arc_lo,   +bot_h,     -te_nl,       -af_lo,       -le_rad]
-  Block UTW : [+wake_trans, +t_seam_up, -top_trans, -te_nu]
-  Block UMW : [+wake_main,  -outU,     -top_main,   -t_seam_up]
-  Block LTW : [+bot_trans, -t_seam_lo, -wake_trans, +te_nl]
-  Block LMW : [+bot_main,  -outL,     -wake_main,   +t_seam_lo]
+  Block U   : [+af_up,       +te_nu,     -top_h,      -arc_up,      +le_rad]
+  Block L   : [+arc_lo,      +bot_h,     -te_nl,      -af_lo,       -le_rad]
+  Block UTW : [+wake_trans,  +t_seam_up, -top_trans,  -te_nu,       +te_blunt_up]
+  Block UMW : [+wake_main,   -outU,      -top_main,   -t_seam_up]
+  Block LTW : [+bot_trans,   -t_seam_lo, -wake_trans, +te_blunt_lo, +te_nl]
+  Block LMW : [+bot_main,    -outL,      -wake_main,  +t_seam_lo]
+
+The transfinite corners of UTW are (TE_MID, T_MID, T_TOP, TOP_TE); TE_UP is
+an intermediate point on UTW's west compound side. Likewise the corners of
+LTW are (BOT_TE, T_BOT, T_MID, TE_MID) with TE_LO intermediate.
 
 Transfinite consistency
 -----------------------
-  N_af_up    = N_af_lo                                     = chord_pts
-  N_arc + N_h - 1                                          = chord_pts
-  N_le_rad   = N_te_nu  = N_te_nl  = N_outU   = N_outL
-              = N_t_seam_up        = N_t_seam_lo           = normal_pts
-  N_wake_trans = N_top_trans = N_bot_trans                 = transition_wake_pts
-  N_wake_main  = N_top_main  = N_bot_main                  = wake_pts
+  N_af_up      = N_af_lo                                    = chord_pts
+  N_arc + N_h - 1                                           = chord_pts
+  N_le_rad                                                  = normal_pts
+  N_te_nu      = N_te_nl                                    = normal_pts
+  N_te_blunt_up = N_te_blunt_lo                             = te_blunt_pts
+  N_t_seam_up  = N_t_seam_lo  = N_outU = N_outL
+                                = normal_pts + te_blunt_pts - 1
+  N_wake_trans = N_top_trans  = N_bot_trans                 = transition_wake_pts
+  N_wake_main  = N_top_main   = N_bot_main                  = wake_pts
 """
 
 from __future__ import annotations
@@ -160,6 +181,22 @@ def build_c_grid(
     # ---- physics-derived spacings ----------------------------------------
     h1 = first_cell_height(params["Re"], cfg["y_plus_target"], chord=chord)
 
+    # ---- blunt trailing edge --------------------------------------------
+    te_frac = float(cfg["te_chord_fraction"])
+    if not (0.5 < te_frac < 1.0):
+        raise ValueError(
+            f"{case_dir.name}: te_chord_fraction must lie in (0.5, 1.0), "
+            f"got {te_frac}. The blunt-TE topology requires a truncated airfoil."
+        )
+    blunt_pts = int(cfg["te_blunt_pts"])
+    if blunt_pts < 3:
+        raise ValueError(
+            f"{case_dir.name}: te_blunt_pts must be >= 3 (got {blunt_pts}); "
+            f"the blunt-back wall needs at least two cells per half."
+        )
+    n_blunt_cells = blunt_pts - 1
+    te_x = te_frac * chord
+
     # ---- topology dimensions --------------------------------------------
     ff = farfield_points(
         upstream_radius=cfg["upstream_radius"],
@@ -167,11 +204,13 @@ def build_c_grid(
         transverse_extent=cfg["transverse_extent"],
         transition_wake_length=cfg["transition_wake_length"],
         chord=chord,
+        te_chord_fraction=te_frac,
     )
     Rc = cfg["upstream_radius"] * chord
     Lw = cfg["downstream_length"] * chord
     Lt = cfg["transition_wake_length"] * chord
     Lm = Lw - Lt                                # length of MAIN wake block
+    Ht = cfg["transverse_extent"] * chord
 
     # Wall-normal progression: derived to match h1 exactly across n cells
     # covering the whole upstream radius.
@@ -190,7 +229,7 @@ def build_c_grid(
     # ---- transition-wake progression: auto-derive to match airfoil TE cell
     n_trans_cells = cfg["transition_wake_pts"] - 1
     h_te_target = _bump_endpoint_spacing(
-        length=chord,
+        length=te_x,
         n_cells=cfg["chord_pts_upper"] - 1,
         beta=cfg["le_te_cluster"],
     )
@@ -213,7 +252,44 @@ def build_c_grid(
         r_wake_trans = float(explicit_r_trans)
 
     # ---- surface geometry ------------------------------------------------
-    upper, lower = naca_symmetric(params["thickness"], n=cfg["surface_points"])
+    upper, lower = naca_symmetric(
+        params["thickness"], n=cfg["surface_points"], te_chord_fraction=te_frac
+    )
+    h_te = float(upper[-1, 1])
+    if h_te <= 0.0:
+        raise RuntimeError(
+            f"{case_dir.name}: blunt-TE half-thickness came out non-positive "
+            f"(h_te={h_te:.3e}). Check te_chord_fraction and airfoil thickness."
+        )
+
+    # ---- blunt-back progression: match the first cell of te_nu at TE_UP --
+    # te_nu spans (Ht - h_te) with normal_pts cells using r_normal grading
+    # (small cells at TE_UP end). The blunt-back's first cell at TE_UP should
+    # match te_nu's first cell so the west compound side of UTW has a smooth
+    # cell-size transition through the intermediate point TE_UP.
+    L_te_nu = Ht - h_te
+    if abs(r_normal - 1.0) < 1e-12:
+        h_nu_first = L_te_nu / n_normal_cells
+    else:
+        h_nu_first = L_te_nu * (r_normal - 1.0) / (r_normal ** n_normal_cells - 1.0)
+    try:
+        r_blunt = solve_progression(
+            h1=h_nu_first, total_length=h_te, n_cells=n_blunt_cells,
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            f"{case_dir.name}: cannot solve blunt-TE progression "
+            f"(h_nu_first={h_nu_first:.3e}, h_te={h_te:.3e}, n={n_blunt_cells}). "
+            f"Adjust te_chord_fraction or te_blunt_pts. Underlying error: {exc}"
+        ) from exc
+
+    # ---- seam (t_seam_up/lo) and outlet (c_outU/L) progression -----------
+    # These curves now span Ht with (normal_pts - 1 + n_blunt_cells) cells so
+    # they match the cell count of UTW/LTW's compound west side. Re-solve the
+    # progression to keep the first cell at the wake-centreline end matched
+    # to the airfoil-side h1.
+    n_seam_cells = n_normal_cells + n_blunt_cells
+    r_seam = solve_progression(h1=h1, total_length=Ht, n_cells=n_seam_cells)
 
     # ---- gmsh setup ------------------------------------------------------
     gmsh.clear()
@@ -232,9 +308,11 @@ def build_c_grid(
     geo = gmsh.model.geo
 
     # ---- corner points ---------------------------------------------------
-    p_LE_AF  = geo.addPoint(0.0,    0.0,    0.0)
-    p_TE_AF  = geo.addPoint(chord,  0.0,    0.0)
-    p_LE_FAR = geo.addPoint(*ff.LE_FAR,  0.0)
+    p_LE_AF   = geo.addPoint(0.0,   0.0,    0.0)
+    p_TE_UP   = geo.addPoint(te_x, +h_te,   0.0)
+    p_TE_MID  = geo.addPoint(te_x,  0.0,    0.0)
+    p_TE_LO   = geo.addPoint(te_x, -h_te,   0.0)
+    p_LE_FAR  = geo.addPoint(*ff.LE_FAR,  0.0)
     p_TOP_MID = geo.addPoint(*ff.TOP_MID, 0.0)
     p_BOT_MID = geo.addPoint(*ff.BOT_MID, 0.0)
     p_TOP_TE  = geo.addPoint(*ff.TOP_TE,  0.0)
@@ -246,11 +324,18 @@ def build_c_grid(
     p_BOT_OUT = geo.addPoint(*ff.BOT_OUT, 0.0)
     p_OUT_MID = geo.addPoint(*ff.OUT_MID, 0.0)
 
-    # ---- airfoil splines (LE -> TE for both upper and lower) -------------
+    # ---- airfoil splines (LE -> truncated blunt TE) ----------------------
+    # upper[-1] = TE_UP, lower[-1] = TE_LO; the spline endpoints are wired to
+    # the corner points above so the airfoil mesh shares vertices with the
+    # blunt-back wall edges.
     up_inner = [geo.addPoint(float(x), float(y), 0.0) for x, y in upper[1:-1]]
     lo_inner = [geo.addPoint(float(x), float(y), 0.0) for x, y in lower[1:-1]]
-    C_af_up = geo.addSpline([p_LE_AF, *up_inner, p_TE_AF])
-    C_af_lo = geo.addSpline([p_LE_AF, *lo_inner, p_TE_AF])
+    C_af_up = geo.addSpline([p_LE_AF, *up_inner, p_TE_UP])
+    C_af_lo = geo.addSpline([p_LE_AF, *lo_inner, p_TE_LO])
+
+    # ---- blunt-back wall edges (part of the AIRFOIL boundary) -----------
+    C_te_blunt_up = geo.addLine(p_TE_UP,  p_TE_MID)
+    C_te_blunt_lo = geo.addLine(p_TE_MID, p_TE_LO)
 
     # ---- farfield curves (upstream cap, outlet, top/bottom split) -------
     C_arc_up   = geo.addCircleArc(p_LE_FAR, p_LE_AF, p_TOP_MID)
@@ -266,12 +351,12 @@ def build_c_grid(
 
     # ---- internal seam curves (wall-normal + wake centreline) ------------
     C_le_rad    = geo.addLine(p_LE_FAR, p_LE_AF)
-    C_te_nu     = geo.addLine(p_TE_AF,  p_TOP_TE)
-    C_te_nl     = geo.addLine(p_TE_AF,  p_BOT_TE)
-    C_wake_trans = geo.addLine(p_TE_AF, p_T_MID)
-    C_wake_main  = geo.addLine(p_T_MID, p_OUT_MID)
-    C_t_seam_up  = geo.addLine(p_T_MID, p_T_TOP)
-    C_t_seam_lo  = geo.addLine(p_T_MID, p_T_BOT)
+    C_te_nu     = geo.addLine(p_TE_UP,  p_TOP_TE)
+    C_te_nl     = geo.addLine(p_TE_LO,  p_BOT_TE)
+    C_wake_trans = geo.addLine(p_TE_MID, p_T_MID)
+    C_wake_main  = geo.addLine(p_T_MID,  p_OUT_MID)
+    C_t_seam_up  = geo.addLine(p_T_MID,  p_T_TOP)
+    C_t_seam_lo  = geo.addLine(p_T_MID,  p_T_BOT)
 
     # ---- transfinite line counts ----------------------------------------
     chord_pts = cfg["chord_pts_upper"]
@@ -285,10 +370,21 @@ def build_c_grid(
     wake_pts   = cfg["wake_pts"]
     trans_pts  = cfg["transition_wake_pts"]
     bump = float(cfg["le_te_cluster"])
+    # Combined node count along the UTW/LTW compound west sides and the
+    # corresponding east-side (t_seam) and outlet (c_out) edges.
+    seam_pts = normal_pts + n_blunt_cells
 
     # Airfoil — Bump law clusters at BOTH endpoints (LE and TE simultaneously).
     geo.mesh.setTransfiniteCurve(C_af_up, chord_pts, "Bump", bump)
     geo.mesh.setTransfiniteCurve(C_af_lo, chord_pts, "Bump", bump)
+
+    # Blunt-back wall — Progression with small cells at the airfoil corner
+    # (TE_UP for the upper half, TE_LO for the lower half) so the cell next
+    # to TE_UP/TE_LO matches te_nu/te_nl's first cell at that corner.
+    #   C_te_blunt_up : TE_UP  -> TE_MID  (small at start)     | +r_blunt
+    #   C_te_blunt_lo : TE_MID -> TE_LO   (small at end)       | -r_blunt
+    geo.mesh.setTransfiniteCurve(C_te_blunt_up, blunt_pts, "Progression", +r_blunt)
+    geo.mesh.setTransfiniteCurve(C_te_blunt_lo, blunt_pts, "Progression", -r_blunt)
 
     # North-edge segments — uniform along each partition.
     geo.mesh.setTransfiniteCurve(C_arc_up, n_arc, "Progression", 1.0)
@@ -300,19 +396,21 @@ def build_c_grid(
     # airfoil (or wake centreline) end of each curve.
     #   curve            : start -> end                 small at  | coef sign
     #   C_le_rad         : LE_FAR -> LE_AF              end       | -r_normal
-    #   C_te_nu          : TE_AF  -> TOP_TE             start     | +r_normal
-    #   C_te_nl          : TE_AF  -> BOT_TE             start     | +r_normal
-    #   C_t_seam_up      : T_MID  -> T_TOP              start     | +r_normal
-    #   C_t_seam_lo      : T_MID  -> T_BOT              start     | +r_normal
-    #   C_outU           : TOP_OUT -> OUT_MID           end       | -r_normal
-    #   C_outL           : OUT_MID -> BOT_OUT           start     | +r_normal
+    #   C_te_nu          : TE_UP  -> TOP_TE             start     | +r_normal
+    #   C_te_nl          : TE_LO  -> BOT_TE             start     | +r_normal
+    # The t_seam/c_out edges now use seam_pts and r_seam so their cell count
+    # matches the compound (te_nu + te_blunt) west side of UTW/LTW.
+    #   C_t_seam_up      : T_MID  -> T_TOP              start     | +r_seam
+    #   C_t_seam_lo      : T_MID  -> T_BOT              start     | +r_seam
+    #   C_outU           : TOP_OUT -> OUT_MID           end       | -r_seam
+    #   C_outL           : OUT_MID -> BOT_OUT           start     | +r_seam
     geo.mesh.setTransfiniteCurve(C_le_rad,    normal_pts, "Progression", -r_normal)
     geo.mesh.setTransfiniteCurve(C_te_nu,     normal_pts, "Progression", +r_normal)
     geo.mesh.setTransfiniteCurve(C_te_nl,     normal_pts, "Progression", +r_normal)
-    geo.mesh.setTransfiniteCurve(C_t_seam_up, normal_pts, "Progression", +r_normal)
-    geo.mesh.setTransfiniteCurve(C_t_seam_lo, normal_pts, "Progression", +r_normal)
-    geo.mesh.setTransfiniteCurve(C_outU,      normal_pts, "Progression", -r_normal)
-    geo.mesh.setTransfiniteCurve(C_outL,      normal_pts, "Progression", +r_normal)
+    geo.mesh.setTransfiniteCurve(C_t_seam_up, seam_pts,   "Progression", +r_seam)
+    geo.mesh.setTransfiniteCurve(C_t_seam_lo, seam_pts,   "Progression", +r_seam)
+    geo.mesh.setTransfiniteCurve(C_outU,      seam_pts,   "Progression", -r_seam)
+    geo.mesh.setTransfiniteCurve(C_outL,      seam_pts,   "Progression", +r_seam)
 
     # Transition wake — small cells at TE end of each curve.
     geo.mesh.setTransfiniteCurve(C_wake_trans, trans_pts, "Progression", +r_wake_trans)
@@ -325,11 +423,13 @@ def build_c_grid(
     geo.mesh.setTransfiniteCurve(C_bot_main,  wake_pts, "Progression", +r_wake_main)
 
     # ---- block loops & surfaces -----------------------------------------
+    # UTW and LTW have 5-edge loops but only 4 transfinite corners; TE_UP
+    # (resp. TE_LO) sits as an intermediate point on the compound west side.
     loop_U   = geo.addCurveLoop([+C_af_up,      +C_te_nu,     -C_top_h,    -C_arc_up,    +C_le_rad])
     loop_L   = geo.addCurveLoop([+C_arc_lo,     +C_bot_h,     -C_te_nl,    -C_af_lo,     -C_le_rad])
-    loop_UTW = geo.addCurveLoop([+C_wake_trans, +C_t_seam_up, -C_top_trans, -C_te_nu])
+    loop_UTW = geo.addCurveLoop([+C_wake_trans, +C_t_seam_up, -C_top_trans, -C_te_nu,    +C_te_blunt_up])
     loop_UMW = geo.addCurveLoop([+C_wake_main,  -C_outU,      -C_top_main,  -C_t_seam_up])
-    loop_LTW = geo.addCurveLoop([+C_bot_trans,  -C_t_seam_lo, -C_wake_trans, +C_te_nl])
+    loop_LTW = geo.addCurveLoop([+C_bot_trans,  -C_t_seam_lo, -C_wake_trans, +C_te_blunt_lo, +C_te_nl])
     loop_LMW = geo.addCurveLoop([+C_bot_main,   -C_outL,      -C_wake_main,  +C_t_seam_lo])
 
     S_U   = geo.addPlaneSurface([loop_U])
@@ -340,19 +440,19 @@ def build_c_grid(
     S_LMW = geo.addPlaneSurface([loop_LMW])
 
     source_surfaces = [S_U, S_L, S_UTW, S_UMW, S_LTW, S_LMW]
-    loop_sizes      = [5,    5,    4,      4,      4,      4]
+    loop_sizes      = [5,    5,    5,      4,      5,      4]
 
     # Transfinite-surface corners (CCW order picks the parametric (i,j) axes).
     geo.mesh.setTransfiniteSurface(S_U,   "Left",
-                                    [p_LE_AF,  p_TE_AF,  p_TOP_TE,  p_LE_FAR])
+                                    [p_LE_AF,  p_TE_UP,  p_TOP_TE,  p_LE_FAR])
     geo.mesh.setTransfiniteSurface(S_L,   "Left",
-                                    [p_LE_FAR, p_BOT_TE, p_TE_AF,   p_LE_AF])
+                                    [p_LE_FAR, p_BOT_TE, p_TE_LO,   p_LE_AF])
     geo.mesh.setTransfiniteSurface(S_UTW, "Left",
-                                    [p_TE_AF,  p_T_MID,  p_T_TOP,   p_TOP_TE])
+                                    [p_TE_MID, p_T_MID,  p_T_TOP,   p_TOP_TE])
     geo.mesh.setTransfiniteSurface(S_UMW, "Left",
                                     [p_T_MID,  p_OUT_MID, p_TOP_OUT, p_T_TOP])
     geo.mesh.setTransfiniteSurface(S_LTW, "Left",
-                                    [p_BOT_TE, p_T_BOT,  p_T_MID,   p_TE_AF])
+                                    [p_BOT_TE, p_T_BOT,  p_T_MID,   p_TE_MID])
     geo.mesh.setTransfiniteSurface(S_LMW, "Left",
                                     [p_T_BOT,  p_BOT_OUT, p_OUT_MID, p_T_MID])
 
@@ -383,7 +483,9 @@ def build_c_grid(
         }
 
     # ---- classify laterals into aerofoil / freestream / internal seam ----
-    airfoil_curves  = {C_af_up, C_af_lo}
+    # The blunt-back edges (te_blunt_up/lo) are part of the AIRFOIL boundary,
+    # so their extruded laterals must end up on the no-slip wall patch.
+    airfoil_curves  = {C_af_up, C_af_lo, C_te_blunt_up, C_te_blunt_lo}
     farfield_curves = {
         C_arc_up, C_arc_lo, C_top_h, C_bot_h,
         C_top_trans, C_top_main, C_bot_trans, C_bot_main,
@@ -448,25 +550,32 @@ def build_c_grid(
 
     log.info(
         "%s wake handoff: h_TE_target=%.3e | trans_first=%.3e (ratio=%.2f) | "
-        "trans_last=%.3e | main_first=%.3e (ratio=%.2f)",
+        "trans_last=%.3e | main_first=%.3e (ratio=%.2f) | blunt h_te=%.3e "
+        "(at x=%.3f) r_blunt=%.3f",
         case_dir.name,
         h_te_target,
         h_trans_first, h_trans_first / max(h_te_target, 1e-30),
         h_trans_last,
         h_main_first, h_main_first / max(h_trans_last, 1e-30),
+        h_te, te_x, r_blunt,
     )
 
     return {
         "first_cell_height":          float(h1),
         "normal_progression":         float(r_normal),
+        "seam_progression":           float(r_seam),
         "wake_progression":           float(r_wake_main),
         "transition_wake_progression": float(r_wake_trans),
         "h_te_airfoil_target":        float(h_te_target),
         "h_trans_first":              float(h_trans_first),
         "h_trans_last":               float(h_trans_last),
         "h_main_first":               float(h_main_first),
+        "te_chord_fraction":          float(te_frac),
+        "te_half_thickness":          float(h_te),
+        "te_blunt_progression":       float(r_blunt),
         "n_arc_pts":                  int(n_arc),
         "n_horiz_pts":                int(n_h),
+        "n_seam_pts":                 int(seam_pts),
         "cell_count_gmsh":            cell_count,
         "mesh_runtime_s":             float(runtime),
     }

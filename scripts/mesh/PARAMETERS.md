@@ -100,6 +100,83 @@ surface kinks from too few input points.
 
 ---
 
+## Blunt trailing edge
+
+The NACA-4 thickness equation gives a tiny but non-zero half-thickness at
+x=1 (~0.0021·t per side). Forcing it to zero — the legacy "sharp closed TE"
+— makes the airfoil splines converge tangentially at the TE, which is the
+classic *quasi-sharp* tip that produces sliver cells under any structured
+mesher. The blunt-TE topology truncates the airfoil and treats the resulting
+flat back as a wall, so the wake mesh wraps around an honest corner instead
+of sneaking into a near-singular tip.
+
+### `te_chord_fraction = 0.97`
+**What it controls.** Where the airfoil is truncated, in chord units. The
+NACA-4 half-thickness at that x becomes the TE half-thickness `h_te`. The
+TE column (TOP_TE, BOT_TE) is anchored at `x = te_chord_fraction·chord`, so
+the wall-normal seams `te_nu`/`te_nl` remain vertical and the wake-centreline
+edge `wake_trans` starts at `TE_MID = (te_chord_fraction·chord, 0)`.
+
+**Why 0.97.** For NACA0012 this gives `h_te ≈ 0.0017c` per side (3.3‰ of
+chord total blunt-back height) — small enough to be physically negligible
+(production TE thickness is often 0.5–1% of chord on real airfoils) yet
+large enough that the blunt-back wall is meshed by `te_blunt_pts` honest
+cells with a meaningful aspect ratio. Scales with airfoil thickness: NACA0024
+gets ~0.0033c, NACA0008 gets ~0.0011c.
+
+**Trade-off.**
+
+- 1.0 — sharp closed TE; **forbidden** by `topology.py` because the topology
+  degenerates (TE_UP = TE_MID = TE_LO).
+- 0.99 — barely-blunt; `h_te` so small that `r_blunt` is steep and the
+  blunt-back cells are almost-degenerate slivers.
+- 0.97 — current sweet spot; matches NASA TMR convention for NACA0012.
+- 0.95 — noticeably truncated airfoil (`h_te ≈ 0.005c` for NACA0012);
+  detectable Cl/Cd shift vs the closed-TE reference.
+- < 0.93 — measurable lift loss; only justified if you're modelling a real
+  airfoil with a fabricated blunt back.
+
+**Validation.** If you change this, re-check your NACA0012 probe Cl/Cd
+against XFOIL or the NASA TMR reference. Phase-1 validation tolerances in
+CLAUDE.md §13 (ΔCl ≤ 5%, ΔCd ≤ 10%) must still hold.
+
+---
+
+### `te_blunt_pts = 10`
+**What it controls.** Nodes per blunt-back half: 10 on `te_blunt_up`
+(TE_UP → TE_MID) and 10 on `te_blunt_lo` (TE_MID → TE_LO), giving 9 cells
+per half (18 cells across the full blunt back). The blunt-back curve is
+graded with `r_blunt` so the first cell at the airfoil corner (TE_UP/TE_LO)
+matches `te_nu`/`te_nl`'s first cell at that corner — smooth cell-size
+transition through the intermediate point on UTW/LTW's compound west side.
+
+**Cascading effect on the seam edges.** Because UTW/LTW's west side is now
+*compound* (`te_nu` + `te_blunt_*`, total `normal_pts + te_blunt_pts − 1`
+nodes), the opposing east side `t_seam_up`/`t_seam_lo` and the outlet edges
+`c_outU`/`c_outL` get the same node count. Their progression `r_seam` is
+re-solved to span the full transverse extent (`Ht`) with that larger cell
+count while keeping the first cell at the wake-centre end matched to `h1`.
+
+**Why 10.** For NACA0012 at `te_chord_fraction = 0.97`, `h_te ≈ 0.0017c`
+and `h_nu_first ≈ 5×10⁻⁵ m`. With 9 cells, `solve_progression` gives
+`r_blunt ≈ 1.4` — within `solve_progression`'s safe band [1.0001, 10].
+
+**Trade-off.**
+
+- < 5 — too few cells; `r_blunt` exceeds 2 and corner cells become tall
+  slivers.
+- 10 — current balance.
+- > 20 — wasted; `r_blunt` shrinks below 1.1 but the blunt back is only
+  ~1% of chord, so extra cells there can't pay back their cost in the rest
+  of the mesh.
+
+**Coupling.** Doubling `te_blunt_pts` adds `2 × (te_blunt_pts − 1)` cells per
+seam edge — small additive impact on total cell count but it propagates
+through every wall-normal column in UMW and LMW. If you raise it, expect
+total cell count to climb by ~10–20% per +5 nodes.
+
+---
+
 ## Transfinite point counts (resolution knobs)
 
 ### `chord_pts_upper = 160`, `chord_pts_lower = 160`
@@ -123,9 +200,11 @@ they differ. Cambered profiles (future) will need topology relaxation.
 ---
 
 ### `normal_pts = 80`
-**What it controls.** Nodes (79 cells) in the wall-normal j-direction.
-Appears on every wall-normal seam (`le_radial`, `te_normal_up`,
-`te_normal_lo`) and on the outlet edges (which grade toward the wake centre).
+**What it controls.** Nodes (79 cells) in the wall-normal j-direction on
+`le_rad`, `te_nu`, `te_nl`. The seam/outlet edges (`t_seam_up`, `t_seam_lo`,
+`c_outU`, `c_outL`) carry **`normal_pts + te_blunt_pts − 1`** nodes instead,
+since they sit opposite UTW/LTW's compound west side — see the blunt-TE
+section above.
 
 **Why 80.** With h1 ≈ 1e-5 m from y+=30 and a 20c total length, 80 nodes
 gives derived progression ≈1.165 — comfortably inside [1.10, 1.30].
@@ -333,11 +412,12 @@ in z.
 
 ## Topology dispatch
 
-### `topology = "c_grid_4block"`
+### `topology = "c_grid_6block"`
 **What it controls.** Selects which builder in `topology.py` to dispatch to.
-Today only one builder exists; this is the hook for plugging in a 6-block
-builder for Regime B (low-y+ near-stall) or an 8-block builder for Regime C
-(transitional) without changing the orchestrator.
+Today only one builder exists — the C+H 6-block transfinite mesh with a
+transition-wake block downstream of the TE and a blunt trailing-edge wall.
+This is the hook for plugging in a different topology for Regime B (low-y+
+near-stall) or Regime C (transitional) without changing the orchestrator.
 
 ---
 
@@ -408,6 +488,8 @@ When you tune one knob, others may need to follow:
 | `wake_pts` ↑ | `wake_progression` ↓ to keep main-wake first cell aligned with transition's last cell |
 | `transition_wake_length` ↓ | `transition_wake_pts` ↓ proportionally to avoid over-refining a short region; auto-derived ratio sharpens |
 | `transition_wake_progression` set explicitly | be aware you've broken the airfoil-TE matching invariant — check the per-case `wake handoff` log line |
+| `te_chord_fraction` ↓ (blunter TE) | re-validate NACA0012 Cl/Cd vs the closed-TE reference; `r_blunt` eases (good); `h_te_target` shifts because the airfoil curve is shorter |
+| `te_blunt_pts` ↑ | seam/outlet edges (`t_seam_*`, `c_out*`) inherit the larger node count; total cell count climbs noticeably (every wall-normal column in UMW/LMW gains cells) |
 | `upstream_radius` ↑ | `normal_pts` ↑ to keep derived progression in band |
 | `non_orthogonality_max` ↑ (relax gate) | CFD `nNonOrthogonalCorrectors` ↑ to handle skewed faces |
 
@@ -421,7 +503,8 @@ When you tune one knob, others may need to follow:
 | Cp suction-peak resolution | `le_te_cluster`, `chord_pts_*` |
 | Cd accuracy | `wake_pts`, `wake_progression`, `transition_wake_*`, `chord_pts_*` (TE end) |
 | Smooth TE handoff (no skewed corner cells) | `transition_wake_length`, `transition_wake_pts`, `le_te_cluster` |
+| Avoiding sliver cells at the TE tip | `te_chord_fraction`, `te_blunt_pts` |
 | Convergence robustness | `non_orthogonality_max`, `bl_growth_ratio`, `aspect_ratio_max` |
-| Total cell count | `chord_pts_*`, `normal_pts`, `wake_pts`, `transition_wake_pts` |
+| Total cell count | `chord_pts_*`, `normal_pts`, `wake_pts`, `transition_wake_pts`, `te_blunt_pts` |
 | Farfield-influence error | `upstream_radius`, `transverse_extent`, `downstream_length` |
 | BL profile fidelity | `y_plus_target`, `normal_pts`, derived progression ratio |

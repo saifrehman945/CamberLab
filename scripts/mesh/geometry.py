@@ -31,17 +31,42 @@ def naca_thickness(x: np.ndarray, t: float) -> np.ndarray:
     )
 
 
-def naca_symmetric(thickness: float, n: int = 300) -> tuple[np.ndarray, np.ndarray]:
-    """Symmetric NACA-4 surface, sharply closed TE.
+def naca_symmetric(
+    thickness: float,
+    n: int = 300,
+    te_chord_fraction: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Symmetric NACA-4 surface with an optional blunt trailing edge.
+
+    Parameters
+    ----------
+    thickness         : NACA 4-digit max half-thickness ratio (e.g. 0.12).
+    n                 : Total surface points per side (LE -> TE inclusive).
+    te_chord_fraction : Where to truncate the airfoil, in [chord] units.
+                        1.0  -> sharp closed TE (legacy behaviour: y forced to 0
+                                at the last point).
+                        <1.0 -> blunt TE. The airfoil is sampled on
+                                x in [0, te_chord_fraction] and the natural
+                                NACA-4 half-thickness at te_chord_fraction is
+                                kept as the TE half-thickness (no closure
+                                fudge). Use this to avoid the quasi-sharp TE
+                                that produces sliver cells in a structured
+                                mesh.
 
     Returns
     -------
-    upper, lower : (n, 2) float64 arrays, each running LE (0, 0) -> TE (1, 0).
-    The TE y-value is forced to 0 so the two surfaces meet at a single point.
+    upper, lower : (n, 2) float64 arrays, each running LE (0, 0) -> TE.
+                   For a blunt TE, upper[-1] == (te_chord_fraction, +h_te) and
+                   lower[-1] == (te_chord_fraction, -h_te) with h_te > 0.
     """
-    x = cosine_x(n)
+    if not (0.5 < te_chord_fraction <= 1.0):
+        raise ValueError(
+            f"te_chord_fraction must lie in (0.5, 1.0], got {te_chord_fraction}"
+        )
+    x = cosine_x(n) * te_chord_fraction
     y_t = naca_thickness(x, thickness)
-    y_t[-1] = 0.0                  # sharp closed TE
+    if te_chord_fraction >= 1.0 - 1e-12:
+        y_t[-1] = 0.0              # sharp closed TE (legacy)
     upper = np.column_stack((x,  y_t)).astype(np.float64)
     lower = np.column_stack((x, -y_t)).astype(np.float64)
     return upper, lower
@@ -104,15 +129,21 @@ def farfield_points(
     transverse_extent: float,
     transition_wake_length: float,
     chord: float = 1.0,
+    te_chord_fraction: float = 1.0,
 ) -> FarfieldPoints:
     """Build the FarfieldPoints set from chord-multiple extents.
+
+    The TE column (TOP_TE, BOT_TE) anchors at x = te_chord_fraction * chord so
+    the wall-normal seams above and below the airfoil remain vertical when the
+    airfoil is truncated for a blunt TE. All downstream extents are measured
+    from this column.
 
     Notes
     -----
     - `upstream_radius` and `transverse_extent` must be EQUAL (semicircular cap).
     - `transition_wake_length` must be strictly between 0 and `downstream_length`.
-      The transition wake block occupies x in [chord, chord + Lt]; the main wake
-      block occupies x in [chord + Lt, chord + Lw].
+      The transition wake block occupies x in [te_x, te_x + Lt]; the main wake
+      block occupies x in [te_x + Lt, te_x + Lw], where te_x = te_chord_fraction*chord.
     """
     if abs(upstream_radius - transverse_extent) > 1e-9:
         raise ValueError(
@@ -124,20 +155,25 @@ def farfield_points(
             f"transition_wake_length ({transition_wake_length}) must lie strictly "
             f"between 0 and downstream_length ({downstream_length})."
         )
+    if not (0.5 < te_chord_fraction <= 1.0):
+        raise ValueError(
+            f"te_chord_fraction must lie in (0.5, 1.0], got {te_chord_fraction}"
+        )
     Rc = upstream_radius * chord
     Lw = downstream_length * chord
     Lt = transition_wake_length * chord
     Ht = transverse_extent * chord
+    te_x = te_chord_fraction * chord
     return FarfieldPoints(
-        LE_FAR  = (-Rc,         0.0),
-        TOP_MID = ( 0.0,        +Ht),
-        BOT_MID = ( 0.0,        -Ht),
-        TOP_TE  = ( chord,      +Ht),
-        BOT_TE  = ( chord,      -Ht),
-        T_TOP   = ( chord + Lt, +Ht),
-        T_BOT   = ( chord + Lt, -Ht),
-        T_MID   = ( chord + Lt,  0.0),
-        TOP_OUT = ( chord + Lw, +Ht),
-        BOT_OUT = ( chord + Lw, -Ht),
-        OUT_MID = ( chord + Lw,  0.0),
+        LE_FAR  = (-Rc,        0.0),
+        TOP_MID = ( 0.0,       +Ht),
+        BOT_MID = ( 0.0,       -Ht),
+        TOP_TE  = ( te_x,      +Ht),
+        BOT_TE  = ( te_x,      -Ht),
+        T_TOP   = ( te_x + Lt, +Ht),
+        T_BOT   = ( te_x + Lt, -Ht),
+        T_MID   = ( te_x + Lt,  0.0),
+        TOP_OUT = ( te_x + Lw, +Ht),
+        BOT_OUT = ( te_x + Lw, -Ht),
+        OUT_MID = ( te_x + Lw,  0.0),
     )

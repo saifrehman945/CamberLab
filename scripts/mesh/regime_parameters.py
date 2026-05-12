@@ -23,6 +23,17 @@ REGIME_MESH: dict[str, dict | None] = {
         # --- surface discretisation (raw airfoil sampling) ----------------
         "surface_points":           300,                # cosine-spaced per side
 
+        # --- blunt trailing edge ------------------------------------------
+        # The airfoil is truncated at x = te_chord_fraction * chord and the
+        # natural NACA-4 half-thickness at that x is kept as the TE half-
+        # thickness. This eliminates the quasi-sharp tip that produces sliver
+        # cells when a closed-TE NACA-4 is meshed structurally.
+        # te_blunt_pts is the number of nodes ACROSS the blunt back wall
+        # (TE_UP -> TE_MID -> TE_LO together), shared by the upper and lower
+        # halves equally.
+        "te_chord_fraction":        0.97,
+        "te_blunt_pts":             10,
+
         # --- transfinite point counts -------------------------------------
         "chord_pts_upper":          160,                # along upper airfoil (LE -> TE)
         "chord_pts_lower":          160,                # along lower airfoil (LE -> TE)
