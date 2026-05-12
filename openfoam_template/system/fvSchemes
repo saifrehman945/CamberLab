@@ -22,23 +22,14 @@ ddtSchemes
 gradSchemes
 {
     default         Gauss linear;
-
-    limited         cellLimited Gauss linear 1;
-    grad(U)         $limited;
-    grad(k)         $limited;
-    grad(omega)     $limited;
 }
 
 divSchemes
 {
     default         none;
 
-    div(phi,U)      bounded Gauss linearUpwind limited;
-
-    turbulence      bounded Gauss upwind;
-    div(phi,k)      $turbulence;
-    div(phi,omega)  $turbulence;
-
+    div(phi,U)       bounded Gauss linearUpwind grad(U);
+    div(phi,nuTilda) bounded Gauss linearUpwind grad(nuTilda);
     div((nuEff*dev2(T(grad(U))))) Gauss linear;
 }
 
@@ -59,7 +50,7 @@ snGradSchemes
 
 wallDist
 {
-    method meshWave;
+    method          meshWave;
 }
 
 // ************************************************************************* //

@@ -10,27 +10,29 @@ FoamFile
     format      ascii;
     class       volScalarField;
     location    "0";
-    object      omega;
+    object      nuTilda;
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-dimensions      [0 0 -1 0 0 0 0];
+// Spalart–Allmaras freestream nuTilda ≈ 3 * nu_inf (nu_inf = 1.5e-5 m^2/s).
+// NASA TMR low-turbulence external-aero baseline; gives nut_inf/nu ≈ 0.21.
 
-internalField   uniform {{ OMEGAINF }};
+dimensions      [0 2 -1 0 0 0 0];
+
+internalField   uniform 4.5e-05;
 
 boundaryField
 {
     freestream
     {
-        type            inletOutlet;
-        inletValue      uniform {{ OMEGAINF }};
-        value           uniform {{ OMEGAINF }};
+        type            freestream;
+        freestreamValue uniform 4.5e-05;
     }
 
     aerofoil
     {
-        type            omegaWallFunction;
-        value           uniform {{ OMEGAINF }};
+        type            fixedValue;
+        value           uniform 0;
     }
 
     frontAndBack

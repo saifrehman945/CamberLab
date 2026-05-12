@@ -24,11 +24,12 @@ solvers
         relTol          0.01;
     }
 
-    "(U|k|omega)"
+    "(U|nuTilda)"
     {
-        solver          PBiCGStab;
-        preconditioner  DILU;
-        tolerance       1e-10;
+        solver          smoothSolver;
+        smoother        GaussSeidel;
+        nSweeps         2;
+        tolerance       1e-08;
         relTol          0.1;
     }
 
@@ -49,13 +50,13 @@ potentialFlow
 SIMPLE
 {
     nNonOrthogonalCorrectors 1;
+    consistent               yes;
 
     residualControl
     {
         p               1e-5;
         U               1e-5;
-        k               1e-5;
-        omega           1e-5;
+        nuTilda         1e-5;
     }
 }
 
@@ -68,9 +69,8 @@ relaxationFactors
 
     equations
     {
-        U               0.5;
-        k               0.3;
-        omega           0.3;
+        U               0.7;
+        nuTilda         0.7;
     }
 }
 

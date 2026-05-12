@@ -28,7 +28,7 @@ boundaryField
 
     aerofoil
     {
-        type            nutLowReWallFunction;
+        type            nutUSpaldingWallFunction;
         value           uniform 0;
     }
 
