@@ -71,18 +71,25 @@ def load_polygon(path: Path) -> np.ndarray:
 
 @dataclass(frozen=True)
 class FarfieldPoints:
-    """Named 2-D point set used by the C+H 4-block topology.
+    """Named 2-D point set used by the C+H 6-block topology.
 
     Coordinate conventions:
       chord lies along +x with LE at (0, 0) and TE at (1, 0).
       Upstream radius Rc and transverse half-height Ht are equal so the upstream
       arc is a true semicircle centered on the LE.
+
+    The T_* points sit on the vertical interface at x = chord + L_trans, which
+    separates the transition wake block (immediately downstream of TE) from
+    the main wake block (continuing to the outlet).
     """
     LE_FAR:   tuple[float, float]   # (-Rc, 0)
     TOP_MID:  tuple[float, float]   # (0,  +Ht)
     BOT_MID:  tuple[float, float]   # (0,  -Ht)
     TOP_TE:   tuple[float, float]   # (1,  +Ht)
     BOT_TE:   tuple[float, float]   # (1,  -Ht)
+    T_TOP:    tuple[float, float]   # (1+Lt, +Ht)  transition->main interface, top
+    T_BOT:    tuple[float, float]   # (1+Lt, -Ht)  transition->main interface, bottom
+    T_MID:    tuple[float, float]   # (1+Lt, 0)    transition->main interface, wake centreline
     TOP_OUT:  tuple[float, float]   # (1+Lw, +Ht)
     BOT_OUT:  tuple[float, float]   # (1+Lw, -Ht)
     OUT_MID:  tuple[float, float]   # (1+Lw, 0)
@@ -95,31 +102,41 @@ def farfield_points(
     upstream_radius: float,
     downstream_length: float,
     transverse_extent: float,
+    transition_wake_length: float,
     chord: float = 1.0,
 ) -> FarfieldPoints:
     """Build the FarfieldPoints set from chord-multiple extents.
 
-    Note
-    ----
-    `upstream_radius` and `transverse_extent` are both expressed as multiples
-    of chord; for the C+H topology to use a clean semicircular upstream cap
-    they must be EQUAL. We do not silently force them equal; we raise if they
-    differ so the caller sees the constraint.
+    Notes
+    -----
+    - `upstream_radius` and `transverse_extent` must be EQUAL (semicircular cap).
+    - `transition_wake_length` must be strictly between 0 and `downstream_length`.
+      The transition wake block occupies x in [chord, chord + Lt]; the main wake
+      block occupies x in [chord + Lt, chord + Lw].
     """
     if abs(upstream_radius - transverse_extent) > 1e-9:
         raise ValueError(
             f"Upstream radius ({upstream_radius}) must equal transverse extent "
             f"({transverse_extent}) for the C+H topology's semicircular cap."
         )
+    if not (0.0 < transition_wake_length < downstream_length):
+        raise ValueError(
+            f"transition_wake_length ({transition_wake_length}) must lie strictly "
+            f"between 0 and downstream_length ({downstream_length})."
+        )
     Rc = upstream_radius * chord
     Lw = downstream_length * chord
+    Lt = transition_wake_length * chord
     Ht = transverse_extent * chord
     return FarfieldPoints(
-        LE_FAR  = (-Rc,        0.0),
-        TOP_MID = ( 0.0,       +Ht),
-        BOT_MID = ( 0.0,       -Ht),
-        TOP_TE  = ( chord,     +Ht),
-        BOT_TE  = ( chord,     -Ht),
+        LE_FAR  = (-Rc,         0.0),
+        TOP_MID = ( 0.0,        +Ht),
+        BOT_MID = ( 0.0,        -Ht),
+        TOP_TE  = ( chord,      +Ht),
+        BOT_TE  = ( chord,      -Ht),
+        T_TOP   = ( chord + Lt, +Ht),
+        T_BOT   = ( chord + Lt, -Ht),
+        T_MID   = ( chord + Lt,  0.0),
         TOP_OUT = ( chord + Lw, +Ht),
         BOT_OUT = ( chord + Lw, -Ht),
         OUT_MID = ( chord + Lw,  0.0),

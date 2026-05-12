@@ -139,41 +139,105 @@ gives derived progression ≈1.165 — comfortably inside [1.10, 1.30].
 
 ---
 
-### `wake_pts = 140`
-**What it controls.** Nodes (139 cells) along the wake direction in blocks
-UW and LW. Same count is required on `wake_axis`, `top_tail`, `bot_tail`.
+### `wake_pts = 220`
+**What it controls.** Nodes (219 cells) along the **main** wake direction in
+blocks UMW and LMW. Same count is required on `wake_main`, `top_main`,
+`bot_main`. Note that this is the main-wake count only — the short
+transition wake immediately downstream of TE is sized separately by
+`transition_wake_pts`.
 
-**Why 140.** With `wake_progression = 1.04` over 30c, this gives first wake
-cell ≈ 5×10⁻³ m, growing geometrically to ≈1 m at the outlet. Near-TE wake is
-resolved at chord/200 streamwise.
+**Why 220.** With `wake_progression = 1.015` and a main-wake length of
+(30 − 0.4)c = 29.6c, this gives first-main-wake cell ≈ 1.8×10⁻² m, growing
+gently outward to ≈0.6 m at the outlet. The transition wake block on its
+west side delivers cells of comparable size to this, so the main-wake first
+cell is no longer a "first cell at TE" problem — it's the handoff from the
+transition block, which by construction matches.
 
-**Trade-off and known issue.** The first wake cell (5e-3 m) is ~17× larger
-than the airfoil's last chord cell (3e-4 m). That mismatch causes localised
-non-orthogonality at the TE junction. Two fixes:
+**Trade-off.**
 
-1. Raise `wake_pts` to ~250 with `wake_progression ≈ 1.06`.
-2. Solver-derive `wake_progression` to match the airfoil TE cell size
-   (`wake_refinement.solve_wake_progression`). Cleaner.
+- < 150 — main wake under-resolved within the first 5–10c downstream.
+- 220 — current sweet spot for `wake_progression = 1.015`.
+- 300+ — wasted; outer-wake cells get unnecessarily small.
+
+---
+
+## Wake transition block
+
+### `transition_wake_length = 0.4`
+**What it controls.** Chord-multiple length of the short structured block
+sitting immediately downstream of the TE. Three new points (`T_TOP`,
+`T_BOT`, `T_MID`) at `x = 1 + transition_wake_length` define the vertical
+seam between the transition wake and the main wake.
+
+**Why 0.4.** Standard production C-grid practice is 0.3–0.5c. The block
+needs to be **long enough** to grade smoothly from airfoil TE spacing
+(~5×10⁻⁴ m) to main-wake spacing (~1.8×10⁻² m) without an aspect-ratio
+discontinuity, and **short enough** that it doesn't waste cells far
+downstream.
+
+**Trade-off.**
+
+- < 0.2c — too short; transition progression has to be aggressive (r > 1.1)
+  to span the cell-size jump → cell-size gradients become large.
+- 0.3–0.5c — clean handoff.
+- > 0.7c — wasted; the main wake block could cover the same span more
+  cheaply.
+
+---
+
+### `transition_wake_pts = 80`
+**What it controls.** Nodes (79 cells) inside the transition block along
+the wake direction. Same count is shared by `wake_trans`, `top_trans`,
+`bot_trans`.
+
+**Why 80.** With `transition_wake_length = 0.4` and a derived progression
+that matches airfoil-TE spacing at the TE end, 80 nodes give a healthy
+~1.05 growth ratio across the block.
+
+**Trade-off.** Lower counts force more aggressive grading; higher counts
+just refine an already-thin region.
+
+---
+
+### `transition_wake_progression = None`
+**What it controls.** Geometric progression ratio along the transition
+block. **None** (the default) → derive automatically by solving
+`h_TE_target * (rⁿ - 1) / (r - 1) = transition_wake_length`, where
+`h_TE_target = le_te_cluster * chord / (chord_pts - 1)` is the estimated
+Bump-endpoint cell size on the airfoil at TE. Set a float (e.g. `1.045`) to
+override.
+
+**Why auto-derive.** This is the entire point of having the transition
+block — it absorbs the cell-size jump between the airfoil and the main
+wake. Hard-coding a ratio defeats the purpose; the regime params can be
+tuned freely and the transition block tracks automatically.
+
+**Diagnostic logging.** `topology.py` emits a one-line summary per case:
+`h_TE_target | trans_first (ratio) | trans_last | main_first (ratio)`.
+The first ratio should be ≈1 (transition matches airfoil); the second ratio
+should be small (smooth handoff to main wake).
 
 ---
 
 ## Transfinite grading laws
 
-### `le_te_cluster = 0.05`
+### `le_te_cluster = 0.09`
 **What it controls.** gmsh **Bump** law β-coefficient on the airfoil splines.
 Smaller β → tighter clustering at both endpoints (LE and TE simultaneously);
-β=1 → uniform.
+β=1 → uniform. **Also drives the auto-derivation of
+`transition_wake_progression`** via the Bump-endpoint estimate.
 
-**Why 0.05.** Empirically gives endpoint cells ~20× smaller than mid-chord
-cells. For chord_pts=160 on a unit chord: ~3×10⁻⁴ m at LE/TE vs ~6×10⁻³ m
-mid-chord.
+**Why 0.09.** Endpoint cells ~11× smaller than mid-chord cells. For
+chord_pts=160 on a unit chord: ~5.6×10⁻⁴ m at LE/TE vs ~6×10⁻³ m mid-chord.
+The TE cell size sets the transition wake's first-cell target — too-small
+forces an aggressive transition progression, too-large smears the Cp peak.
 
 **Trade-off.**
 
-- 0.02 — very tight LE/TE cluster (good Cp peak), inflates mid-chord cell
-  size and worsens LE aspect ratios.
-- 0.05 — balanced.
-- 0.20 — milder; faster but smeared Cp peak.
+- 0.02 — very tight LE/TE cluster (sharp Cp peak), aggressive transition
+  progression required.
+- 0.09 — current balance, plays cleanly with the transition wake.
+- 0.20 — mild cluster; faster but smeared Cp peak.
 
 **Coupling.** Single parameter governs both LE and TE clustering on the same
 curve. Cannot be tuned independently with current topology. If we need that
@@ -181,40 +245,47 @@ later (transonic sharp TE), split the airfoil curve at mid-chord.
 
 ---
 
-### `wake_progression = 1.04`
-**What it controls.** Geometric growth ratio along the wake direction. First
-cell at TE; each downstream cell is 4% longer than the previous.
+### `wake_progression = 1.015`
+**What it controls.** Geometric growth ratio along the **main** wake block
+(blocks UMW and LMW), applied to `wake_main`, `top_main`, `bot_main`. First
+cell at the transition→main interface (`T_*` points); each downstream cell
+is 1.5% longer than the previous.
 
-**Why 1.04.** Roughly equal-aspect-ratio cells through the first ~5c of wake.
-
-**Trade-off / current pain point.** 1.04 over 139 cells in a 30c wake → first
-cell ≈ 5e-3 m, mismatching the airfoil's TE chord cell. Options:
-
-- raise to 1.06–1.08 — smaller first wake cells, bigger outer-wake cells.
-- solver-derive from the airfoil TE cell size (recommended; one-line change
-  using `wake_refinement.solve_wake_progression`).
-
----
-
-### `north_arc_to_horiz_ratio = 1.0`
-**What it controls.** Partition of the airfoil-block's "north" edge between
-the arc sub-curve (from LE_FAR to TOP_MID) and the horizontal sub-curve (from
-TOP_MID to TOP_TE). At 1.0 each gets half the chord_pts nodes.
-
-**Why 1.0.** Arc spans π/2 × 20c ≈ 31.4 m arc length; horizontal spans 1 m.
-At ratio 1.0 the arc has 80 nodes over 31 m (mean 0.4 m); horizontal has 80
-over 1 m (mean 0.012 m). Arc is coarser — fine because those cells are 20c
-from the wall.
+**Why 1.015.** With `wake_pts = 220` over a ~29.6c main-wake length, this
+gives a near-uniform main-wake spacing (first ≈ 1.8×10⁻² m, last ≈ 0.6 m).
+Because the transition wake block now hands off cells of comparable size to
+this, there is no longer a cell-size cliff at TE.
 
 **Trade-off.**
 
-- ratio > 1 — more nodes on the arc, fewer on the horizontal. Since the
-  horizontal sits directly above the airfoil, increasing this **hurts**.
-- ratio < 1 — concentrates nodes on horizontal. Slightly better above the
-  airfoil, coarser ahead of LE.
+- 1.005 — near-uniform wake (lots of cells far downstream where they're
+  wasted).
+- 1.015 — current balance.
+- 1.03+ — sharper outer-wake coarsening but reopens a size mismatch at the
+  transition→main interface (large jump from transition-block last cell to
+  main-block first cell).
 
-In practice this dial barely affects force coefficients in attached flow; it
-matters more for the suction peak's upstream-influence zone.
+---
+
+### `north_arc_to_horiz_ratio = 0.65`
+**What it controls.** Partition of the airfoil-block's "north" edge between
+the arc sub-curve (from LE_FAR to TOP_MID) and the horizontal sub-curve (from
+TOP_MID to TOP_TE). The cell-count split is `arc : horiz = ratio : 1`.
+
+**Why 0.65.** Arc spans π/2 × 20c ≈ 31.4 m arc length; horizontal spans
+chord = 1 m. With ratio 0.65 the arc gets ~63 cells and the horizontal gets
+~96 cells (out of 159 total). The horizontal — which sits directly above the
+airfoil and matters more for force prediction — gets denser nodes than the
+arc; the upstream arc, sitting 20c away from the wall, can be coarser
+without harm.
+
+**Trade-off.**
+
+- ratio > 1 — more nodes on the arc, fewer on the horizontal; weakens
+  resolution above the airfoil. **Hurts** force coefficients.
+- 0.65 — current weighting; favours the horizontal slightly.
+- ratio < 0.4 — most nodes on horizontal, very coarse arc; risks introducing
+  visible cell-size gradient at TOP_MID/BOT_MID corner.
 
 ---
 
@@ -331,9 +402,12 @@ When you tune one knob, others may need to follow:
 | Change | Likely also-need-to-change |
 |---|---|
 | `y_plus_target` ↓ (e.g., 30 → 1 for low-Re regime) | `wall_treatment` → `"low_re"`; OpenFOAM template directory swap |
-| `chord_pts_upper/lower` ↑ | maybe `le_te_cluster` ↑ (less aggressive cluster to preserve mid-chord size) |
+| `chord_pts_upper/lower` ↑ | `le_te_cluster` ↑ (less aggressive cluster); transition wake re-derives automatically |
+| `le_te_cluster` ↑ | airfoil TE cell grows → transition wake progression eases automatically (auto-derived) |
 | `normal_pts` ↑↑ | derived progression may dip below `bl_growth_ratio`; warning will fire |
-| `wake_pts` ↑ | `wake_progression` ↓ to keep first wake cell matched to TE |
+| `wake_pts` ↑ | `wake_progression` ↓ to keep main-wake first cell aligned with transition's last cell |
+| `transition_wake_length` ↓ | `transition_wake_pts` ↓ proportionally to avoid over-refining a short region; auto-derived ratio sharpens |
+| `transition_wake_progression` set explicitly | be aware you've broken the airfoil-TE matching invariant — check the per-case `wake handoff` log line |
 | `upstream_radius` ↑ | `normal_pts` ↑ to keep derived progression in band |
 | `non_orthogonality_max` ↑ (relax gate) | CFD `nNonOrthogonalCorrectors` ↑ to handle skewed faces |
 
@@ -345,8 +419,9 @@ When you tune one knob, others may need to follow:
 |---|---|
 | Cl accuracy near LE | `le_te_cluster`, `chord_pts_*` |
 | Cp suction-peak resolution | `le_te_cluster`, `chord_pts_*` |
-| Cd accuracy | `wake_pts`, `wake_progression`, `chord_pts_*` (TE end) |
+| Cd accuracy | `wake_pts`, `wake_progression`, `transition_wake_*`, `chord_pts_*` (TE end) |
+| Smooth TE handoff (no skewed corner cells) | `transition_wake_length`, `transition_wake_pts`, `le_te_cluster` |
 | Convergence robustness | `non_orthogonality_max`, `bl_growth_ratio`, `aspect_ratio_max` |
-| Total cell count | `chord_pts_*`, `normal_pts`, `wake_pts` |
+| Total cell count | `chord_pts_*`, `normal_pts`, `wake_pts`, `transition_wake_pts` |
 | Farfield-influence error | `upstream_radius`, `transverse_extent`, `downstream_length` |
 | BL profile fidelity | `y_plus_target`, `normal_pts`, derived progression ratio |

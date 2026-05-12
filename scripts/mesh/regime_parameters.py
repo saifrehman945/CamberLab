@@ -27,19 +27,30 @@ REGIME_MESH: dict[str, dict | None] = {
         "chord_pts_upper":          160,                # along upper airfoil (LE -> TE)
         "chord_pts_lower":          160,                # along lower airfoil (LE -> TE)
         "normal_pts":               80,                 # wall-normal direction
-        "wake_pts":                 140,                # along wake (TE -> outlet)
+        "wake_pts":                 220,                # along MAIN wake (T_MID -> outlet)
+
+        # --- wake transition block ----------------------------------------
+        # A short structured block immediately downstream of TE that inherits
+        # airfoil-TE chordwise spacing and grades outward to the main-wake
+        # spacing. Removes the cell-size cliff that produces skewed cells at
+        # the TE junction in a plain C-grid.
+        "transition_wake_length":     0.4,    # chord multiples (0.3 - 0.5 typical)
+        "transition_wake_pts":        80,     # nodes along the transition block
+        # None -> derive progression from airfoil TE chord cell (recommended).
+        # Set a float (e.g. 1.045) to force a specific value.
+        "transition_wake_progression": None,
 
         # --- transfinite grading laws -------------------------------------
         # le_te_cluster: gmsh "Bump" beta on airfoil curves. Smaller -> tighter
         # clustering at BOTH endpoints (LE and TE simultaneously).
-        "le_te_cluster":            0.05,
-        # wake_progression: geometric growth ratio along the wake (cells
-        # coarsen downstream of TE).
-        "wake_progression":         1.04,
+        "le_te_cluster":            0.09,
+        # wake_progression: geometric growth ratio along the MAIN wake block
+        # (cells coarsen from transition->main interface out to the outlet).
+        "wake_progression":         1.015,
         # north_arc_to_horiz_ratio: split of the north edge of the over/under
         # airfoil blocks between the upstream semicircle arc and the
         # horizontal top/bottom run from x=0 to x=1.
-        "north_arc_to_horiz_ratio": 1.0,
+        "north_arc_to_horiz_ratio": 0.65,
 
         # --- farfield extents (chord multiples) ---------------------------
         "upstream_radius":          20.0,
@@ -51,7 +62,7 @@ REGIME_MESH: dict[str, dict | None] = {
         "spanwise_layers":          1,
 
         # --- topology dispatch --------------------------------------------
-        "topology":                 "c_grid_4block",
+        "topology":                 "c_grid_6block",
 
         # --- quality acceptance gates -------------------------------------
         "non_orthogonality_max":    70.0,
