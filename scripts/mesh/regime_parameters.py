@@ -37,7 +37,7 @@ REGIME_MESH: dict[str, dict | None] = {
         # --- transfinite point counts -------------------------------------
         "chord_pts_upper":          160,                # along upper airfoil (LE -> TE)
         "chord_pts_lower":          160,                # along lower airfoil (LE -> TE)
-        "normal_pts":               80,                 # wall-normal direction
+        "normal_pts":               100,                 # wall-normal direction
         "wake_pts":                 220,                # along MAIN wake (T_MID -> outlet)
 
         # --- wake transition block ----------------------------------------
@@ -45,8 +45,8 @@ REGIME_MESH: dict[str, dict | None] = {
         # airfoil-TE chordwise spacing and grades outward to the main-wake
         # spacing. Removes the cell-size cliff that produces skewed cells at
         # the TE junction in a plain C-grid.
-        "transition_wake_length":     0.4,    # chord multiples (0.3 - 0.5 typical)
-        "transition_wake_pts":        80,     # nodes along the transition block
+        "transition_wake_length":     0.65,    # chord multiples (0.3 - 0.5 typical)
+        "transition_wake_pts":        120,     # nodes along the transition block
         # None -> derive progression from airfoil TE chord cell (recommended).
         # Set a float (e.g. 1.045) to force a specific value.
         "transition_wake_progression": None,

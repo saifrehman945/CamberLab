@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import shlex
 import subprocess
 import sys
@@ -131,8 +132,12 @@ def run_solver(case_dirs: dict[str, Path], jobs: int) -> None:
         f'"cd {{1}} && source {OPENFOAM_BASHRC} && foamRun > log.foamRun 2>&1" '
         f"::: {case_list}"
     )
+    # GNU parallel defaults to /bin/sh (dash on Ubuntu) for each job, which
+    # has no `source` builtin and chokes on OpenFOAM's bash-only bashrc.
+    # Force bash for the per-job shell.
+    env = {**os.environ, "PARALLEL_SHELL": "/bin/bash"}
     log.info("running foamRun on %d cases (parallel -j %d)", len(case_dirs), jobs)
-    subprocess.run(cmd, shell=True, check=True)
+    subprocess.run(cmd, shell=True, check=True, env=env)
 
 
 def collect_comparisons(

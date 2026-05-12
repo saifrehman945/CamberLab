@@ -94,19 +94,27 @@ def stage_case(
     alpha_deg = float(case_meta["alpha_deg"])
     Re = float(case_meta["Re"])
     thickness = float(case_meta["thickness"])
+    regime = case_meta.get("_regime") or geometry.classify_regime(
+        alpha_deg, Re, thickness
+    )
 
-    # 1) Geometry
-    coords = geometry.aerofoil_polygon(thickness, geometry.N_POINTS)
+    # 1) Geometry — mirror 02_geometry.py
+    cfg = geometry.REGIME_MESH.get(regime)
+    n_points = (cfg or geometry.REGIME_MESH["A"])["surface_points"]
+    upper, lower = geometry.naca_symmetric(thickness, n=n_points)
+    coords = geometry.closed_polygon(upper, lower)
     geometry.write_aerofoil_dat(case_dir / "aerofoil.dat", coords)
+    geometry.write_surfaces_npz(case_dir / "aerofoil_surfaces.npz", upper, lower)
     geometry.write_params_json(
         case_dir / "params.json",
         alpha_deg=alpha_deg,
         Re=Re,
         thickness=thickness,
+        regime=regime,
     )
     (case_dir / "validation_meta.json").write_text(
         json.dumps({
-            "regime":         case_meta.get("_regime"),
+            "regime":         regime,
             "case_id":        case_meta["case_id"],
             "airfoil":        case_meta["airfoil"],
             "Mach":           case_meta.get("Mach"),
@@ -116,31 +124,23 @@ def stage_case(
         encoding="utf-8",
     )
 
-    # 2) Mesh
+    # 2) Mesh — delegate to 03_mesh.py's mesh_one_case (handles reset,
+    # build_c_grid, gmshToFoam, checkMesh, validate_quality, write_metadata).
     if not skip_mesh:
         boundary_path = case_dir / "constant" / "polyMesh" / "boundary"
         if boundary_path.exists() and not force:
             log.info("[%s] mesh present — skipping", case_dir.name)
         else:
-            if force:
-                mesh.reset_case_mesh(case_dir)
             gmsh_module = mesh.require_gmsh()
             gmsh_module.initialize()
             try:
-                params = mesh.load_params(case_dir)
-                metrics = mesh.build_mesh(
-                    case_dir / "aerofoil.dat",
-                    params["Re"],
-                    case_dir,
-                    chord=mesh.CHORD,
-                    target_y_plus=mesh.TARGET_Y_PLUS,
-                )
+                metrics = mesh.mesh_one_case(case_dir)
                 log.info(
                     "[%s] meshed cells=%d nonOrtho=%.2f skew=%.3f",
                     case_dir.name,
-                    int(metrics["cell_count"]),
-                    metrics["max_non_orthogonality"],
-                    metrics["max_skewness"],
+                    int(metrics.get("cells_total") or 0),
+                    metrics.get("max_non_orthogonality") or float("nan"),
+                    metrics.get("max_skewness") or float("nan"),
                 )
             finally:
                 gmsh_module.finalize()
