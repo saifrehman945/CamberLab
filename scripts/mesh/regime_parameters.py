@@ -31,8 +31,8 @@ REGIME_MESH: dict[str, dict | None] = {
         # te_blunt_pts is the number of nodes ACROSS the blunt back wall
         # (TE_UP -> TE_MID -> TE_LO together), shared by the upper and lower
         # halves equally.
-        "te_chord_fraction":        0.999,
-        "te_blunt_pts":             4,
+        "te_chord_fraction":        0.99,
+        "te_blunt_pts":             15,
 
         # --- transfinite point counts -------------------------------------
         "chord_pts_upper":          160,                # along upper airfoil (LE -> TE)
