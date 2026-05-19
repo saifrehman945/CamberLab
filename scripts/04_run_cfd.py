@@ -9,13 +9,16 @@ Usage:
     micromamba run -n openfoam python scripts/04_run_cfd.py
     micromamba run -n openfoam python scripts/04_run_cfd.py --case-id 0 1 2
     micromamba run -n openfoam python scripts/04_run_cfd.py --run --jobs 4
+
+When --run is used with --jobs N > 1, each case is solved sequentially using
+N MPI ranks via decomposePar / mpirun / reconstructPar. The same N is written
+into system/decomposeParDict at render time.
 """
 
 import argparse
 import json
 import logging
 import math
-import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -64,7 +67,11 @@ def parse_args() -> argparse.Namespace:
         "--jobs",
         type=int,
         default=DEFAULT_JOBS,
-        help="GNU parallel job count when --run is enabled.",
+        help=(
+            "Number of MPI subdomains written to system/decomposeParDict. "
+            "When --run is enabled and --jobs > 1, each case is solved in "
+            "parallel on this many cores (cases still run one-at-a-time)."
+        ),
     )
     return parser.parse_args()
 
@@ -100,7 +107,7 @@ def load_params(case_dir: Path) -> dict[str, float]:
     }
 
 
-def build_render_context(alpha_deg: float, reynolds_number: float) -> dict[str, str]:
+def build_render_context(alpha_deg: float, reynolds_number: float, nprocs: int) -> dict[str, str]:
     alpha_rad = math.radians(alpha_deg)
     u_inf = reynolds_number * NU / CHORD
     ux = u_inf * math.cos(alpha_rad)
@@ -128,6 +135,7 @@ def build_render_context(alpha_deg: float, reynolds_number: float) -> dict[str, 
         "KINF": fmt(k_inf),
         "OMEGAINF": fmt(omega_inf),
         "RHO": fmt(RHO),
+        "NPROCS": str(nprocs),
     }
 
 
@@ -161,9 +169,9 @@ def render_template_files(case_dir: Path, context: dict[str, str]) -> None:
         target_path.write_text(rendered.rstrip() + "\n")
 
 
-def render_case(case_dir: Path) -> None:
+def render_case(case_dir: Path, nprocs: int) -> None:
     params = load_params(case_dir)
-    context = build_render_context(params["alpha_deg"], params["Re"])
+    context = build_render_context(params["alpha_deg"], params["Re"], nprocs)
     copy_static_template_files(case_dir)
     render_template_files(case_dir, context)
 
@@ -181,14 +189,26 @@ def has_mesh(case_dir: Path) -> bool:
     return (case_dir / "constant" / "polyMesh" / "boundary").exists()
 
 
-def run_case(case_dir: Path) -> None:
+def run_case(case_dir: Path, nprocs: int) -> None:
     # Wall-resolved kOmegaSST diverges from a uniform U field on AR~10^3
     # boundary-layer cells, so initialise U/p with potentialFlow first.
-    command = (
-        f"source {OPENFOAM_BASHRC} && "
-        f"potentialFoam -initialiseUBCs > log.potentialFoam 2>&1 && "
-        f"foamRun > log.simpleFoam 2>&1"
-    )
+    if nprocs > 1:
+        command = (
+            f"source {OPENFOAM_BASHRC} && "
+            f"decomposePar -force > log.decomposePar 2>&1 && "
+            f"mpirun -np {nprocs} potentialFoam -initialiseUBCs -parallel "
+            f"> log.potentialFoam 2>&1 && "
+            f"mpirun -np {nprocs} foamRun -parallel "
+            f"> log.simpleFoam 2>&1 && "
+            f"reconstructPar -latestTime > log.reconstructPar 2>&1"
+        )
+    else:
+        command = (
+            f"source {OPENFOAM_BASHRC} && "
+            f"potentialFoam -initialiseUBCs > log.potentialFoam 2>&1 && "
+            f"foamRun > log.simpleFoam 2>&1"
+        )
+
     result = subprocess.run(
         ["bash", "-lc", command],
         cwd=case_dir,
@@ -199,49 +219,12 @@ def run_case(case_dir: Path) -> None:
         log.error("foamRun failed in %s: %s", case_dir, result.stderr[-500:])
         raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
 
-    log.info("Completed foamRun for %s", case_dir.name)
+    log.info("Completed foamRun for %s (np=%d)", case_dir.name, nprocs)
 
 
-def run_cases(case_dirs: list[Path], jobs: int) -> None:
-    if not case_dirs:
-        return
-
-    if len(case_dirs) == 1:
-        run_case(case_dirs[0])
-        return
-
-    if shutil.which("parallel") and jobs > 1:
-        case_list = " ".join(shlex.quote(str(case_dir)) for case_dir in case_dirs)
-        command = (
-            f'parallel -j {jobs} '
-            f'"cd {{1}} && source {OPENFOAM_BASHRC} && '
-            f'potentialFoam -initialiseUBCs > log.potentialFoam 2>&1 && '
-            f'foamRun > log.simpleFoam 2>&1" '
-            f"::: {case_list}"
-        )
-        result = subprocess.run(
-            ["bash", "-lc", command],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            log.error("GNU parallel foamRun failed: %s", result.stderr[-1000:])
-            raise subprocess.CalledProcessError(
-                result.returncode,
-                result.args,
-                result.stdout,
-                result.stderr,
-            )
-
-        log.info("Completed foamRun for %d cases with GNU parallel (-j %d)", len(case_dirs), jobs)
-        return
-
-    if jobs > 1:
-        log.warning("GNU parallel not found; falling back to sequential execution")
-
+def run_cases(case_dirs: list[Path], nprocs: int) -> None:
     for case_dir in case_dirs:
-        run_case(case_dir)
+        run_case(case_dir, nprocs)
 
 
 def main() -> None:
@@ -257,8 +240,9 @@ def main() -> None:
         log.warning("No case directories with params.json were found under %s", CASES_DIR)
         return
 
+    nprocs = max(args.jobs, 1)
     for case_dir in case_dirs:
-        render_case(case_dir)
+        render_case(case_dir, nprocs)
 
     if not args.run:
         return
@@ -274,7 +258,7 @@ def main() -> None:
         log.warning("No rendered cases have a mesh yet; nothing was executed")
         return
 
-    run_cases(runnable_cases, max(args.jobs, 1))
+    run_cases(runnable_cases, nprocs)
 
 
 if __name__ == "__main__":

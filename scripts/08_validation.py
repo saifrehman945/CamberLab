@@ -22,14 +22,14 @@ Usage
     # Stage + compare (Regime A). Solver must already have run, or pass --run.
     micromamba run -n openfoam python scripts/08_validation.py --regime A
 
-    # Stage + run + compare (4 parallel jobs is the default)
+    # Stage + run + compare (single case at a time, decomposed across 4 cores)
     micromamba run -n openfoam python scripts/08_validation.py --regime A --run
 
     # Regenerate geometry + mesh only — no CFD, no reference comparison.
     # Emits validation/mesh_quality.csv with cells / non-ortho / skewness / y+ target.
     micromamba run -n openfoam python scripts/08_validation.py --regime A --mesh-only --force
 
-    # Several regimes at once (Regime B/C/D require their mesh templates to be implemented)
+    # Several regimes at once, each case solved on 8 cores via MPI decomposition
     micromamba run -n openfoam python scripts/08_validation.py --regime A B --run --jobs 8
 
     # Re-plot / re-summarize from existing cases (no staging, no run)
@@ -41,8 +41,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -93,7 +91,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--run", action="store_true",
                    help="Invoke foamRun on each staged case after staging.")
     p.add_argument("--jobs", type=int, default=4,
-                   help="GNU parallel concurrency for --run. Default 4.")
+                   help="MPI subdomains per case (written to system/decomposeParDict). "
+                        "Cases run one at a time on this many cores. Default 4.")
     p.add_argument("--no-stage", action="store_true",
                    help="Skip staging (assumes cases already exist on disk).")
     p.add_argument("--force", action="store_true",
@@ -126,7 +125,7 @@ def discover_case_dirs(regime: str) -> dict[str, Path]:
 # Staging
 # ---------------------------------------------------------------------------
 
-def stage_regime(regime: str, force: bool) -> tuple[dict[str, Path], list[dict]]:
+def stage_regime(regime: str, force: bool, nprocs: int) -> tuple[dict[str, Path], list[dict]]:
     """Stage every case declared in metadata.json (exact AoA — no fuzzy match).
 
     Returns (case_dirs, mesh_records) where mesh_records summarises each case's
@@ -153,7 +152,7 @@ def stage_regime(regime: str, force: bool) -> tuple[dict[str, Path], list[dict]]
             case_meta["Re"], case_meta["thickness"],
         )
         stage_case(case_dir, case_meta, geometry, mesh, run_cfd,
-                   force=force, skip_mesh=False)
+                   force=force, skip_mesh=False, nprocs=nprocs)
         case_dirs[case_meta["case_id"]] = case_dir
         mesh_records.append(_collect_mesh_record(regime, case_meta, case_dir))
 
@@ -188,21 +187,34 @@ def _collect_mesh_record(regime: str, case_meta: dict, case_dir: Path) -> dict:
 # Solver execution
 # ---------------------------------------------------------------------------
 
-def run_solver(case_dirs: dict[str, Path], jobs: int) -> None:
+def run_solver(case_dirs: dict[str, Path], nprocs: int) -> None:
     if not case_dirs:
         log.warning("no cases to run")
         return
-    case_list = " ".join(shlex.quote(str(d)) for d in case_dirs.values())
-    cmd = (
-        f"parallel -j {jobs} "
-        f'"cd {{1}} && source {OPENFOAM_BASHRC} && foamRun > log.foamRun 2>&1" '
-        f"::: {case_list}"
-    )
-    # GNU parallel defaults to /bin/sh (dash on Ubuntu), which has no `source`
-    # builtin and chokes on OpenFOAM's bash-only bashrc. Force bash per-job.
-    env = {**os.environ, "PARALLEL_SHELL": "/bin/bash"}
-    log.info("running foamRun on %d cases (parallel -j %d)", len(case_dirs), jobs)
-    subprocess.run(cmd, shell=True, check=True, env=env)
+
+    nprocs = max(nprocs, 1)
+    log.info("running foamRun on %d cases sequentially (np=%d per case)",
+             len(case_dirs), nprocs)
+
+    if nprocs > 1:
+        inner = (
+            f"decomposePar -force > log.decomposePar 2>&1 && "
+            f"mpirun -np {nprocs} potentialFoam -initialiseUBCs -parallel "
+            f"> log.potentialFoam 2>&1 && "
+            f"mpirun -np {nprocs} foamRun -parallel "
+            f"> log.foamRun 2>&1 && "
+            f"reconstructPar -latestTime > log.reconstructPar 2>&1"
+        )
+    else:
+        inner = (
+            f"potentialFoam -initialiseUBCs > log.potentialFoam 2>&1 && "
+            f"foamRun > log.foamRun 2>&1"
+        )
+
+    for cid, case_dir in case_dirs.items():
+        log.info("  [%s] %s", cid, case_dir.relative_to(PROJECT_ROOT))
+        cmd = f"source {OPENFOAM_BASHRC} && {inner}"
+        subprocess.run(["bash", "-lc", cmd], cwd=case_dir, check=True)
 
 
 # ---------------------------------------------------------------------------
@@ -288,14 +300,15 @@ def main() -> int:
         if args.no_stage:
             case_dirs = discover_case_dirs(regime)
         else:
-            case_dirs, mesh_records = stage_regime(regime, force=args.force)
+            case_dirs, mesh_records = stage_regime(regime, force=args.force,
+                                                   nprocs=args.jobs)
             overall_mesh.extend(mesh_records)
 
         if args.mesh_only:
             continue   # skip CFD execution + reference comparison
 
         if args.run:
-            run_solver(case_dirs, jobs=args.jobs)
+            run_solver(case_dirs, nprocs=args.jobs)
 
         comparisons = collect_comparisons(case_dirs, metadata, args.window)
         if not comparisons:

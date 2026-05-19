@@ -84,6 +84,7 @@ def stage_case(
     run_cfd: ModuleType,
     force: bool,
     skip_mesh: bool,
+    nprocs: int = 1,
 ) -> dict:
     """Stage a single validation case using the existing pipeline modules.
 
@@ -146,7 +147,7 @@ def stage_case(
                 gmsh_module.finalize()
 
     # 3) Render OpenFOAM templates (current single-template path)
-    run_cfd.render_case(case_dir)
+    run_cfd.render_case(case_dir, nprocs)
 
     return {"case_id": case_meta["case_id"], "case_dir": str(case_dir)}
 
