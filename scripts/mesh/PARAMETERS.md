@@ -142,38 +142,73 @@ CLAUDE.md §13 (ΔCl ≤ 5%, ΔCd ≤ 10%) must still hold.
 
 ---
 
-### `te_blunt_pts = 10`
-**What it controls.** Nodes per blunt-back half: 10 on `te_blunt_up`
-(TE_UP → TE_MID) and 10 on `te_blunt_lo` (TE_MID → TE_LO), giving 9 cells
-per half (18 cells across the full blunt back). The blunt-back curve is
-graded with `r_blunt` so the first cell at the airfoil corner (TE_UP/TE_LO)
-matches `te_nu`/`te_nl`'s first cell at that corner — smooth cell-size
-transition through the intermediate point on UTW/LTW's compound west side.
+### `te_blunt_pts = "auto"`
+**What it controls.** Nodes per blunt-back half: `te_blunt_pts` on
+`te_blunt_up` (TE_UP → TE_MID) and `te_blunt_pts` on `te_blunt_lo`
+(TE_MID → TE_LO), giving `te_blunt_pts − 1` cells per half. The blunt-back
+curve is graded with `r_blunt` so the first cell at the airfoil corner
+(TE_UP/TE_LO) matches `te_nu`/`te_nl`'s first cell at that corner — smooth
+cell-size transition through the intermediate point on UTW/LTW's compound
+west side.
 
-**Cascading effect on the seam edges.** Because UTW/LTW's west side is now
+**Accepted values.**
+
+- `"auto"` (default) — `topology.py` derives the maximum count the
+  geometry can fit, given the case's `h_te` (blunt-back half-thickness, set
+  by `te_chord_fraction` × airfoil thickness) and `h_nu_first` (the
+  wall-normal first cell at TE_UP, derived from y+ target and Re). The
+  exact rule is `n_max = floor(h_te / (1.10 × h_nu_first))`; the 10%
+  headroom keeps `solve_progression`'s bisection in its comfortable band.
+  The resolved value is logged at INFO per case
+  (`case_XXXX: te_blunt_pts auto -> N`).
+- explicit `int N ≥ 3` — used as a **ceiling**. The same `n_max` is
+  computed; if `N − 1 > n_max`, the count is downgraded to `n_max + 1` and
+  the case logs `te_blunt_pts downgraded N -> n_max+1`. If `N − 1 ≤
+  n_max`, `N` is honoured exactly. Useful when you want a deterministic,
+  identical count across cases (e.g. for ablation studies) — but be
+  prepared for some samples to silently downgrade.
+
+**Why `"auto"` is the default.** The blunt-back wall is short (~0.2–0.5% of
+chord), so the cell count there is mostly determined by what physically
+fits. A fixed integer ends up either too high (gets downgraded for thin
+TE / low Re cases) or too low (wastes the resolution thicker cases could
+absorb). `"auto"` matches the count to the case rather than imposing a
+nominal value that gets overridden anyway.
+
+**Cascading effect on the seam edges.** Because UTW/LTW's west side is
 *compound* (`te_nu` + `te_blunt_*`, total `normal_pts + te_blunt_pts − 1`
 nodes), the opposing east side `t_seam_up`/`t_seam_lo` and the outlet edges
-`c_outU`/`c_outL` get the same node count. Their progression `r_seam` is
-re-solved to span the full transverse extent (`Ht`) with that larger cell
-count while keeping the first cell at the wake-centre end matched to `h1`.
+`c_outU`/`c_outL` inherit the same node count. Their progression `r_seam`
+is re-solved to span the full transverse extent (`Ht`) with that larger
+cell count while keeping the first cell at the wake-centre end matched to
+`h1`. With `"auto"`, this seam count varies per case.
 
-**Why 10.** For NACA0012 at `te_chord_fraction = 0.97`, `h_te ≈ 0.0017c`
-and `h_nu_first ≈ 5×10⁻⁵ m`. With 9 cells, `solve_progression` gives
-`r_blunt ≈ 1.4` — within `solve_progression`'s safe band [1.0001, 10].
+**Worked numbers (Regime A LHS).** For `te_chord_fraction = 0.99`:
 
-**Trade-off.**
+| Sample | t | Re | h_te | h_nu_first | `"auto"` resolves to |
+|---|---|---|---|---|---|
+| NACA0012 / Re=6e6 | 0.12 | 6e6 | 2.63e-3 | 1.5e-4 | **15** (validation baseline) |
+| Thick + high Re   | 0.20 | 3e6 | 4.4e-3  | 2.5e-4 | ~16 |
+| Thin + low Re     | 0.10 | 1.5e6 | 2.2e-3 | 5.5e-4 | **3** |
+
+The validated NACA0012 mesh keeps its resolution exactly under `"auto"` —
+the `15` it was previously set to was simply the geometry-derived max for
+that case.
+
+**Trade-off (when overriding `"auto"` with an int).**
 
 - < 5 — too few cells; `r_blunt` exceeds 2 and corner cells become tall
   slivers.
-- 10 — current balance.
-- > 20 — wasted; `r_blunt` shrinks below 1.1 but the blunt back is only
-  ~1% of chord, so extra cells there can't pay back their cost in the rest
-  of the mesh.
+- 10–15 — typical sweet spot for moderate Regime A.
+- > 20 — wasted on the validated NACA0012 case; will get capped by
+  geometry on most other cases anyway.
 
-**Coupling.** Doubling `te_blunt_pts` adds `2 × (te_blunt_pts − 1)` cells per
-seam edge — small additive impact on total cell count but it propagates
-through every wall-normal column in UMW and LMW. If you raise it, expect
-total cell count to climb by ~10–20% per +5 nodes.
+**Coupling.** Cell-count impact propagates through every wall-normal
+column in UMW and LMW via the seam point count. Under `"auto"`, total cell
+count varies modestly per case (~±2k around 108k for typical Regime A);
+that variation is harmless for the surrogate but means you should pull the
+per-case `cells_total` from `case_metadata.json` rather than assuming a
+single nominal count.
 
 ---
 
@@ -489,7 +524,7 @@ When you tune one knob, others may need to follow:
 | `transition_wake_length` ↓ | `transition_wake_pts` ↓ proportionally to avoid over-refining a short region; auto-derived ratio sharpens |
 | `transition_wake_progression` set explicitly | be aware you've broken the airfoil-TE matching invariant — check the per-case `wake handoff` log line |
 | `te_chord_fraction` ↓ (blunter TE) | re-validate NACA0012 Cl/Cd vs the closed-TE reference; `r_blunt` eases (good); `h_te_target` shifts because the airfoil curve is shorter |
-| `te_blunt_pts` ↑ | seam/outlet edges (`t_seam_*`, `c_out*`) inherit the larger node count; total cell count climbs noticeably (every wall-normal column in UMW/LMW gains cells) |
+| `te_blunt_pts` set to explicit int (override `"auto"`) | be aware the adaptive solver may still downgrade per case; seam/outlet edges (`t_seam_*`, `c_out*`) inherit the resolved node count and total cell count varies per case |
 | `upstream_radius` ↑ | `normal_pts` ↑ to keep derived progression in band |
 | `non_orthogonality_max` ↑ (relax gate) | CFD `nNonOrthogonalCorrectors` ↑ to handle skewed faces |
 

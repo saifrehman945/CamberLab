@@ -30,9 +30,15 @@ REGIME_MESH: dict[str, dict | None] = {
         # cells when a closed-TE NACA-4 is meshed structurally.
         # te_blunt_pts is the number of nodes ACROSS the blunt back wall
         # (TE_UP -> TE_MID -> TE_LO together), shared by the upper and lower
-        # halves equally.
+        # halves equally. Accepts either:
+        #   "auto"  - use the maximum value the blunt-back geometry can fit
+        #             given h_nu_first (wall-normal first cell at TE_UP).
+        #             Best default: the count then varies per case, matching
+        #             whatever the (Re, t/c) combination physically supports.
+        #   int N>=3 - use N as a ceiling; the per-case adaptive solver may
+        #             still reduce N if h_nu_first * (N - 1) > h_te.
         "te_chord_fraction":        0.99,
-        "te_blunt_pts":             15,
+        "te_blunt_pts":             "auto",
 
         # --- transfinite point counts -------------------------------------
         "chord_pts_upper":          160,                # along upper airfoil (LE -> TE)

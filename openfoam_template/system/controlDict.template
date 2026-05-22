@@ -69,6 +69,37 @@ functions
         lRef            1.0;
         Aref            {{ AREF }};
     }
+
+    yPlus
+    {
+        type            yPlus;
+        libs            ("libfieldFunctionObjects.so");
+
+        executeControl  writeTime;
+        writeControl    writeTime;
+    }
+
+    aerofoilSamples
+    {
+        type            surfaces;
+        libs            ("libsampling.so");
+
+        writeControl    writeTime;
+
+        surfaceFormat   raw;
+        fields          (p);
+        interpolationScheme cellPoint;
+
+        surfaces
+        (
+            aerofoil
+            {
+                type        patch;
+                patches     (aerofoil);
+                triangulate false;
+            }
+        );
+    }
 }
 
 // ************************************************************************* //

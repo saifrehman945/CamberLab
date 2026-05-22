@@ -188,13 +188,24 @@ def build_c_grid(
             f"{case_dir.name}: te_chord_fraction must lie in (0.5, 1.0), "
             f"got {te_frac}. The blunt-TE topology requires a truncated airfoil."
         )
-    blunt_pts = int(cfg["te_blunt_pts"])
-    if blunt_pts < 3:
-        raise ValueError(
-            f"{case_dir.name}: te_blunt_pts must be >= 3 (got {blunt_pts}); "
-            f"the blunt-back wall needs at least two cells per half."
-        )
-    n_blunt_cells = blunt_pts - 1
+    # te_blunt_pts accepts:
+    #   "auto" — defer to the geometry-derived maximum (set below once
+    #            h_nu_first / h_te are known).
+    #   int N>=3 — explicit ceiling; the adaptive solver may still reduce it.
+    raw_blunt = cfg["te_blunt_pts"]
+    auto_blunt = isinstance(raw_blunt, str) and raw_blunt.lower() == "auto"
+    if auto_blunt:
+        blunt_pts = None
+        n_blunt_cells = None
+    else:
+        blunt_pts = int(raw_blunt)
+        if blunt_pts < 3:
+            raise ValueError(
+                f"{case_dir.name}: te_blunt_pts must be >= 3 or 'auto' "
+                f"(got {raw_blunt}); the blunt-back wall needs at least "
+                f"two cells per half."
+            )
+        n_blunt_cells = blunt_pts - 1
     te_x = te_frac * chord
 
     # ---- topology dimensions --------------------------------------------
@@ -272,6 +283,39 @@ def build_c_grid(
         h_nu_first = L_te_nu / n_normal_cells
     else:
         h_nu_first = L_te_nu * (r_normal - 1.0) / (r_normal ** n_normal_cells - 1.0)
+
+    # Adaptive blunt-TE cell count. The constraint h_nu_first * n <= h_te is
+    # needed for solve_progression to find a growing geometric progression
+    # across the blunt back. We compute the largest n that satisfies it with
+    # 10% headroom (so the bisection has room to find r > 1).
+    #   - "auto" mode: n is set to this geometry-derived maximum.
+    #   - explicit int: the configured value is used as a ceiling; reduced
+    #     only if it doesn't fit. NACA0012/Re=6e6 (validated) keeps its
+    #     configured value because the geometry comfortably accommodates it.
+    max_blunt_cells = int(h_te / (1.10 * h_nu_first))
+    if max_blunt_cells < 2:
+        raise RuntimeError(
+            f"{case_dir.name}: blunt TE too thin for adaptive grading "
+            f"(h_te={h_te:.3e}, h_nu_first={h_nu_first:.3e}). "
+            f"Consider lowering te_chord_fraction or raising normal_pts."
+        )
+    if auto_blunt:
+        n_blunt_cells = max_blunt_cells
+        blunt_pts = n_blunt_cells + 1
+        log.info(
+            "%s: te_blunt_pts auto -> %d (h_te=%.3e, h_nu_first=%.3e)",
+            case_dir.name, blunt_pts, h_te, h_nu_first,
+        )
+    elif max_blunt_cells < n_blunt_cells:
+        log.info(
+            "%s: te_blunt_pts downgraded %d -> %d "
+            "(h_te=%.3e, h_nu_first=%.3e)",
+            case_dir.name, n_blunt_cells + 1, max_blunt_cells + 1,
+            h_te, h_nu_first,
+        )
+        n_blunt_cells = max_blunt_cells
+        blunt_pts = n_blunt_cells + 1
+
     try:
         r_blunt = solve_progression(
             h1=h_nu_first, total_length=h_te, n_cells=n_blunt_cells,
