@@ -91,7 +91,66 @@ REGIME_MESH: dict[str, dict | None] = {
         "target_cells_min":         40_000,
         "target_cells_max":         200_000,
     },
-    "B": None,
+    "B": {
+        # --- wall / boundary layer ----------------------------------------
+        # Fully resolved walls: y+ < 1, no wall functions. Required for
+        # kOmegaSST to capture separation onset at the near-stall regime.
+        "y_plus_target":            0.5,
+        "bl_growth_ratio":          1.10,
+        "bl_layers":                35,
+        "wall_treatment":           "low_re",          # consumed by CFD stage
+
+        # --- surface discretisation (raw airfoil sampling) ----------------
+        "surface_points":           300,
+
+        # --- blunt trailing edge ------------------------------------------
+        "te_chord_fraction":        0.99,
+        "te_blunt_pts":             "auto",
+
+        # --- transfinite point counts -------------------------------------
+        # Suction-side resolution increased to capture adverse-pressure-
+        # gradient separation. Wall-normal stack is taller to fit a y+~0.5
+        # first cell + 35 BL layers + smooth transition to farfield.
+        "chord_pts_upper":          220,
+        "chord_pts_lower":          200,
+        "normal_pts":               150,
+        "wake_pts":                 280,
+
+        # --- wake transition block ----------------------------------------
+        "transition_wake_length":     1.0,
+        "transition_wake_pts":        160,
+        "transition_wake_progression": None,
+
+        # --- transfinite grading laws -------------------------------------
+        "le_te_cluster":            0.09,
+        "wake_progression":         1.012,
+        "north_arc_to_horiz_ratio": 0.65,
+
+        # --- farfield extents (chord multiples) ---------------------------
+        "upstream_radius":          20.0,
+        "downstream_length":        30.0,
+        "transverse_extent":        20.0,
+
+        # --- 2D quasi-3D extrusion ----------------------------------------
+        "spanwise_thickness":       0.05,
+        "spanwise_layers":          1,
+
+        # --- topology dispatch --------------------------------------------
+        "topology":                 "c_grid_6block",
+
+        # --- quality acceptance gates -------------------------------------
+        # Tighter than A. Near-stall flow with high-AR resolved BL cells
+        # is sensitive to non-orthogonality; >60deg risks divergence even
+        # with nNonOrthogonalCorrectors=2 baked into the B fvSolution.
+        "non_orthogonality_max":    60.0,
+        "skewness_max":             3.0,
+        "aspect_ratio_max":         5000.0,
+        "min_hex_fraction":         0.999,
+
+        # --- advisory cell-count band (warning only) ----------------------
+        "target_cells_min":         300_000,
+        "target_cells_max":         1_000_000,
+    },
     "C": None,
     "D": None,
 }

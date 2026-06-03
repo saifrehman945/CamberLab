@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CASES_DIR = PROJECT_ROOT / "cases"
-TEMPLATE_DIR = PROJECT_ROOT / "openfoam_template"
+TEMPLATES_ROOT = PROJECT_ROOT / "openfoam_template"
 OPENFOAM_BASHRC = Path("/opt/openfoam12/etc/bashrc")
 
 CHORD = 1.0
@@ -41,8 +41,6 @@ TURBULENCE_INTENSITY = 0.01
 TURBULENCE_LENGTH_SCALE = 0.07 * CHORD
 CMU = 0.09
 DEFAULT_JOBS = 4
-
-JINJA_ENV = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)))
 
 
 def parse_args() -> argparse.Namespace:
@@ -98,12 +96,17 @@ def collect_case_dirs(case_ids: list[int] | None) -> list[Path]:
     return case_dirs
 
 
-def load_params(case_dir: Path) -> dict[str, float]:
+def load_params(case_dir: Path) -> dict[str, float | str]:
     payload = json.loads((case_dir / "params.json").read_text())
+    regime = payload.get("regime")
+    if regime is None:
+        regime = "A"
+        log.info("%s: params.json has no 'regime' field — defaulting to A", case_dir.name)
     return {
         "alpha_deg": float(payload["alpha_deg"]),
         "Re": float(payload["Re"]),
         "thickness": float(payload["thickness"]),
+        "regime": str(regime),
     }
 
 
@@ -139,9 +142,9 @@ def build_render_context(alpha_deg: float, reynolds_number: float, nprocs: int) 
     }
 
 
-def copy_static_template_files(case_dir: Path) -> None:
-    for source_path in TEMPLATE_DIR.rglob("*"):
-        relative_path = source_path.relative_to(TEMPLATE_DIR)
+def copy_static_template_files(case_dir: Path, template_dir: Path) -> None:
+    for source_path in template_dir.rglob("*"):
+        relative_path = source_path.relative_to(template_dir)
         target_path = case_dir / relative_path
 
         if source_path.is_dir():
@@ -158,26 +161,35 @@ def copy_static_template_files(case_dir: Path) -> None:
         shutil.copy2(source_path, target_path)
 
 
-def render_template_files(case_dir: Path, context: dict[str, str]) -> None:
-    for source_path in TEMPLATE_DIR.rglob("*.template"):
-        template_name = str(source_path.relative_to(TEMPLATE_DIR))
+def render_template_files(case_dir: Path, context: dict[str, str], template_dir: Path) -> None:
+    env = Environment(loader=FileSystemLoader(str(template_dir)))
+    for source_path in template_dir.rglob("*.template"):
+        template_name = str(source_path.relative_to(template_dir))
         target_relative = template_name.removesuffix(".template")
         target_path = case_dir / target_relative
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
-        rendered = JINJA_ENV.get_template(template_name).render(**context)
+        rendered = env.get_template(template_name).render(**context)
         target_path.write_text(rendered.rstrip() + "\n")
 
 
 def render_case(case_dir: Path, nprocs: int) -> None:
     params = load_params(case_dir)
+    regime = params["regime"]
+    template_dir = TEMPLATES_ROOT / f"regime_{regime}"
+    if not template_dir.exists():
+        raise FileNotFoundError(
+            f"No template for regime '{regime}': {template_dir} does not exist"
+        )
+
     context = build_render_context(params["alpha_deg"], params["Re"], nprocs)
-    copy_static_template_files(case_dir)
-    render_template_files(case_dir, context)
+    copy_static_template_files(case_dir, template_dir)
+    render_template_files(case_dir, context, template_dir)
 
     log.info(
-        "Rendered %s  alpha=%5.2f deg  Re=%.3e  t=%.4f  Uinf=%s m/s",
+        "Rendered %s (regime %s)  alpha=%5.2f deg  Re=%.3e  t=%.4f  Uinf=%s m/s",
         case_dir.name,
+        regime,
         params["alpha_deg"],
         params["Re"],
         params["thickness"],
@@ -230,8 +242,8 @@ def run_cases(case_dirs: list[Path], nprocs: int) -> None:
 def main() -> None:
     args = parse_args()
 
-    if not TEMPLATE_DIR.exists():
-        raise FileNotFoundError(f"{TEMPLATE_DIR} not found")
+    if not TEMPLATES_ROOT.exists():
+        raise FileNotFoundError(f"{TEMPLATES_ROOT} not found")
     if not OPENFOAM_BASHRC.exists():
         raise FileNotFoundError(f"{OPENFOAM_BASHRC} not found")
 
