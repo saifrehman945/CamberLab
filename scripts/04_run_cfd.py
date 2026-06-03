@@ -196,9 +196,9 @@ def run_case(case_dir: Path, nprocs: int) -> None:
         command = (
             f"source {OPENFOAM_BASHRC} && "
             f"decomposePar -force > log.decomposePar 2>&1 && "
-            f"mpirun -np {nprocs} potentialFoam -initialiseUBCs -parallel "
+            f"mpirun --oversubscribe -np {nprocs} potentialFoam -initialiseUBCs -parallel "
             f"> log.potentialFoam 2>&1 && "
-            f"mpirun -np {nprocs} foamRun -parallel "
+            f"mpirun --oversubscribe -np {nprocs} foamRun -parallel "
             f"> log.simpleFoam 2>&1 && "
             f"reconstructPar -latestTime > log.reconstructPar 2>&1"
         )

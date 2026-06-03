@@ -30,6 +30,8 @@ if str(SCRIPTS_DIR) not in sys.path:
 from mesh.geometry import naca_symmetric, closed_polygon            # noqa: E402
 from mesh.regime_parameters import REGIME_MESH, classify_regime     # noqa: E402
 
+VALID_REGIMES = set(REGIME_MESH.keys())
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s — %(message)s")
 log = logging.getLogger(__name__)
 
@@ -82,7 +84,15 @@ def main() -> None:
         case_dir = CASES_DIR / f"case_{i:04d}"
         case_dir.mkdir(exist_ok=True)
 
-        regime = classify_regime(row["alpha_deg"], row["Re"], row["thickness"])
+        # Prefer the by-construction regime from samples.csv (the box each
+        # sample was drawn from); fall back to classify_regime for older
+        # CSVs that lack the column. classify_regime is the inference-time
+        # classifier and would mislabel A/D overlap samples.
+        raw_regime = row.get("regime") if hasattr(row, "get") else None
+        if isinstance(raw_regime, str) and raw_regime in VALID_REGIMES:
+            regime = raw_regime
+        else:
+            regime = classify_regime(row["alpha_deg"], row["Re"], row["thickness"])
         regime_counts[regime] = regime_counts.get(regime, 0) + 1
         cfg = REGIME_MESH.get(regime)
         # If a regime is not yet populated, fall back to A's surface count so
