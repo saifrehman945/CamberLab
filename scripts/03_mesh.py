@@ -35,6 +35,7 @@ from mesh import (                                               # noqa: E402
     REGIME_MESH,
     classify_regime,
     build_c_grid,
+    build_bl_mesh,
     parse_check_mesh,
     validate_quality,
     rewrite_boundary_types,
@@ -206,7 +207,21 @@ def mesh_one_case(case_dir: Path, regime_override: str | None = None) -> dict:
     reset_case_mesh(case_dir)
     ensure_case_scaffold(case_dir)
 
-    mesh_metrics = build_c_grid(case_dir, params=params, cfg=cfg)
+    # Dispatch on the regime's meshing topology. The transfinite C+H grid
+    # ("c_grid_6block") is robust for attached, wall-function regimes; the
+    # BoundaryLayer-field mesh ("bl_field") is required where the first cell is
+    # so thin that transfinite interpolation folds the near-wall cells (Regime
+    # B, y+<1). See mesh.bl_field for the rationale.
+    topology = cfg.get("topology", "c_grid_6block")
+    if topology == "bl_field":
+        mesh_metrics = build_bl_mesh(case_dir, params=params, cfg=cfg)
+    elif topology == "c_grid_6block":
+        mesh_metrics = build_c_grid(case_dir, params=params, cfg=cfg)
+    else:
+        raise ValueError(
+            f"{case_dir.name}: unknown topology '{topology}' in regime cfg; "
+            f"expected 'c_grid_6block' or 'bl_field'."
+        )
 
     run_openfoam_command(case_dir, "gmshToFoam mesh.msh", "log.gmshToFoam")
     rewrite_boundary_types(case_dir / "constant" / "polyMesh" / "boundary")

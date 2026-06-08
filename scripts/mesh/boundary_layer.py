@@ -50,6 +50,14 @@ def progression_sum(h1: float, r: float, n: int) -> float:
     """Total length of a geometric progression: h1 + h1*r + ... + h1*r^(n-1)."""
     if abs(r - 1.0) < 1e-12:
         return h1 * n
+    # r**n can exceed the IEEE-754 double range (~1.8e308) for large n — e.g.
+    # a low-Re mesh (Regime B/C, y+<1) needs hundreds of cells to grade from a
+    # ~1e-6 first cell. When r**n overflows the progression length is already
+    # astronomically larger than any physical target, so return +inf instead of
+    # raising OverflowError. This keeps solve_progression's bisection monotonic
+    # (an overflowing r is simply "more than enough" to reach total_length).
+    if r > 1.0 and n * math.log10(r) > 300.0:
+        return math.inf
     return h1 * (r ** n - 1.0) / (r - 1.0)
 
 

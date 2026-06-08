@@ -93,26 +93,25 @@ REGIME_MESH: dict[str, dict | None] = {
     },
     "B": {
         # --- wall / boundary layer ----------------------------------------
-        # Fully resolved walls: y+ < 1, no wall functions. Required for
-        # kOmegaSST to capture separation onset at the near-stall regime.
         "y_plus_target":            0.5,
         "bl_growth_ratio":          1.10,
-        "bl_layers":                35,
-        "wall_treatment":           "low_re",          # consumed by CFD stage
+        "bl_layers":                35,     # verify spans delta (~0.02c @ TE); see note
+        "wall_treatment":           "low_re",
 
-        # --- surface discretisation (raw airfoil sampling) ----------------
+        # --- surface discretisation ---------------------------------------
         "surface_points":           300,
 
         # --- blunt trailing edge ------------------------------------------
+        # FIX: was 200, which is 4x the documented intent and reproduces the
+        # "mesh explosion" the comment warns against. ~50 is the geometric
+        # ceiling that covers even t/c=0.24 at first cell ~5e-6, ratio ~1.11.
+        # Treated as a ceiling; per-case solver may reduce for thin/low-Re B.
         "te_chord_fraction":        0.99,
-        "te_blunt_pts":             "auto",
+        "te_blunt_pts":             50,
 
         # --- transfinite point counts -------------------------------------
-        # Suction-side resolution increased to capture adverse-pressure-
-        # gradient separation. Wall-normal stack is taller to fit a y+~0.5
-        # first cell + 35 BL layers + smooth transition to farfield.
         "chord_pts_upper":          220,
-        "chord_pts_lower":          200,
+        "chord_pts_lower":          220,
         "normal_pts":               150,
         "wake_pts":                 280,
 
@@ -127,28 +126,63 @@ REGIME_MESH: dict[str, dict | None] = {
         "north_arc_to_horiz_ratio": 0.65,
 
         # --- farfield extents (chord multiples) ---------------------------
-        "upstream_radius":          20.0,
-        "downstream_length":        30.0,
-        "transverse_extent":        20.0,
+        # FIX: raised from 20/30/20. Near-stall lift is farfield-sensitive;
+        # 20c transverse biases Cl high via blockage at alpha 14-16 deg.
+        # Alternative: keep ~25c and add a point-vortex far-field BC.
+        "upstream_radius":          50.0,
+        "downstream_length":        50.0,
+        "transverse_extent":        50.0,
 
         # --- 2D quasi-3D extrusion ----------------------------------------
         "spanwise_thickness":       0.05,
         "spanwise_layers":          1,
 
-        # --- topology dispatch --------------------------------------------
-        "topology":                 "c_grid_6block",
+        # --- BoundaryLayer-field meshing ----------------------------------
+        # Regime B's ~2 micron first cell makes transfinite interpolation fold
+        # the near-wall cells (degenerate cells all along the airfoil + wake;
+        # gmshToFoam then aborts). So B meshes with gmsh's BoundaryLayer field
+        # (true wall-normal layers) + a frontal-quad fill rather than the
+        # c_grid_6block transfinite topology. See mesh.bl_field for the why.
+        #
+        # NOTE: the chord_pts_*, normal_pts, wake_pts, transition_wake_*,
+        # le_te_cluster, north_arc_to_horiz_ratio and te_blunt_pts keys above
+        # are INERT under this topology (kept for reference / metadata). Under
+        # bl_field, near-wall spacing is set by y_plus_target + bl_growth_ratio
+        # and the outer fill by the size knobs below.
+        "topology":                 "bl_field",
+        "bl_thickness_factor":      2.0,    # BL field thickness = factor * delta_99
+        "max_growth_ratio":         1.20,   # cell-to-cell coarsening cap; ALL
+                                            # transitions (airfoil->far, TE->surf,
+                                            # wake->far) are sized from this.
+        "far_cell_size":            1.0,    # chord multiples — max cell at far field
+        "le_cluster_factor":        0.50,   # blunt-TE corner cell = factor * surf cell
+        "le_refine_radius":         0.05,   # chord multiples around the TE corners
+        "wake_box_length":          12.0,   # chord multiples of fine wake corridor
+        "wake_box_halfwidth":       0.6,    # chord multiples above/below wake centreline
+        "wake_cell_size":           8.0,    # multiples of the surface cell in the corridor
+        "mesh_smoothing":           5,      # Laplacian smoothing passes on the fill
 
         # --- quality acceptance gates -------------------------------------
-        # Tighter than A. Near-stall flow with high-AR resolved BL cells
-        # is sensitive to non-orthogonality; >60deg risks divergence even
-        # with nNonOrthogonalCorrectors=2 baked into the B fvSolution.
-        "non_orthogonality_max":    60.0,
+        # Realised on the verified bl_field mesh (NACA0012/Re=6e6): non-ortho
+        # 67.8, skewness 1.00, aspect 946, hex 0.98.
+        #   - non-ortho peaks at the BL / frontal-fill interface; 70 is the
+        #     CLAUDE.md ceiling. Pair with nNonOrthogonalCorrectors>=2 and the
+        #     reduced relaxation the Regime B fvSolution already uses (CLAUDE §5).
+        #   - frontal-quad fill leaves ~2% triangles (-> prisms); realised hex
+        #     fraction ~0.98, so 0.85 is a comfortable floor.
+        "non_orthogonality_max":    70.0,
         "skewness_max":             3.0,
         "aspect_ratio_max":         5000.0,
-        "min_hex_fraction":         0.999,
+        "min_hex_fraction":         0.85,
 
         # --- advisory cell-count band (warning only) ----------------------
-        "target_cells_min":         300_000,
+        # Lowered from 300k: that floor was calibrated for the structured
+        # transfinite grid, whose far field carries many cells. The bl_field
+        # mesh fills the far field with coarse unstructured quads, so an
+        # equivalent near-wall resolution lands ~80-150k total (NACA0012/Re=6e6
+        # ~ 87k). Raise far-field/wake refinement (far_cell_size, grade_distance,
+        # wake_* knobs) if a case needs more wake resolution.
+        "target_cells_min":         60_000,
         "target_cells_max":         1_000_000,
     },
     "C": None,

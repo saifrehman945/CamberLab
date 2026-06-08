@@ -33,7 +33,7 @@ OPENFOAM_BASHRC = Path("/opt/openfoam12/etc/bashrc")
 _METRIC_PATTERNS = {
     "max_non_orthogonality": r"Mesh non-orthogonality Max:\s*([0-9.eE+-]+)",
     "max_skewness":          r"Max skewness =\s*([0-9.eE+-]+)",
-    "max_aspect_ratio":      r"Max aspect ratio[:=]\s*([0-9.eE+-]+)",
+    "max_aspect_ratio":      r"Max aspect ratio\s*[:=]\s*([0-9.eE+-]+)",
     "cells_total":           r"cells:\s*([0-9]+)",
     "points_total":          r"points:\s*([0-9]+)",
     "faces_total":           r"faces:\s*([0-9]+)",
@@ -231,7 +231,9 @@ def write_metadata(
             "skewness_max":          metrics.get("max_skewness"),
             "aspect_ratio_max":      metrics.get("max_aspect_ratio"),
             "first_cell_height":     metrics.get("first_cell_height"),
-            "bl_layers":             cfg.get("bl_layers"),
+            # bl_field derives the realised layer count; fall back to the cfg
+            # value for the transfinite path (which doesn't return one).
+            "bl_layers":             metrics.get("bl_layers") or cfg.get("bl_layers"),
             "bl_growth_ratio":       cfg.get("bl_growth_ratio"),
             "normal_progression":    metrics.get("normal_progression"),
             "normal_pts":            cfg.get("normal_pts"),
