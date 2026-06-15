@@ -96,7 +96,7 @@ REGIME_MESH: dict[str, dict | None] = {
         # Fully resolved walls: y+ < 1, no wall functions. Required for
         # kOmegaSST to capture separation onset at the near-stall regime.
         "y_plus_target":            0.5,
-        "bl_growth_ratio":          1.10,
+        "bl_growth_ratio":          1.30,
         "bl_layers":                35,
         "wall_treatment":           "low_re",          # consumed by CFD stage
 
@@ -105,20 +105,20 @@ REGIME_MESH: dict[str, dict | None] = {
 
         # --- blunt trailing edge ------------------------------------------
         "te_chord_fraction":        0.99,
-        "te_blunt_pts":             "auto",
+        "te_blunt_pts":             60,
 
         # --- transfinite point counts -------------------------------------
         # Suction-side resolution increased to capture adverse-pressure-
         # gradient separation. Wall-normal stack is taller to fit a y+~0.5
         # first cell + 35 BL layers + smooth transition to farfield.
         "chord_pts_upper":          220,
-        "chord_pts_lower":          200,
+        "chord_pts_lower":          220,
         "normal_pts":               150,
-        "wake_pts":                 280,
+        "wake_pts":                 180,
 
         # --- wake transition block ----------------------------------------
         "transition_wake_length":     1.0,
-        "transition_wake_pts":        160,
+        "transition_wake_pts":        220,
         "transition_wake_progression": None,
 
         # --- transfinite grading laws -------------------------------------
@@ -142,9 +142,9 @@ REGIME_MESH: dict[str, dict | None] = {
         # Tighter than A. Near-stall flow with high-AR resolved BL cells
         # is sensitive to non-orthogonality; >60deg risks divergence even
         # with nNonOrthogonalCorrectors=2 baked into the B fvSolution.
-        "non_orthogonality_max":    60.0,
+        "non_orthogonality_max":    70.0,
         "skewness_max":             3.0,
-        "aspect_ratio_max":         5000.0,
+        "aspect_ratio_max":         50000.0,
         "min_hex_fraction":         0.999,
 
         # --- advisory cell-count band (warning only) ----------------------

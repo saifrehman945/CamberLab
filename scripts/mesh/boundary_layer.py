@@ -47,10 +47,19 @@ def bl_thickness(reynolds_number: float, chord: float = 1.0) -> float:
 
 
 def progression_sum(h1: float, r: float, n: int) -> float:
-    """Total length of a geometric progression: h1 + h1*r + ... + h1*r^(n-1)."""
+    """Total length of a geometric progression: h1 + h1*r + ... + h1*r^(n-1).
+
+    For large n with r meaningfully above 1, r**n can overflow float64. In that
+    regime the sum is unambiguously huge — much larger than any physical
+    total_length — so we return math.inf, which lets the bisection upper-bound
+    check in solve_progression succeed and steer r back down.
+    """
     if abs(r - 1.0) < 1e-12:
         return h1 * n
-    return h1 * (r ** n - 1.0) / (r - 1.0)
+    try:
+        return h1 * (r ** n - 1.0) / (r - 1.0)
+    except OverflowError:
+        return math.inf
 
 
 def solve_progression(
