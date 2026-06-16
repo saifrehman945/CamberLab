@@ -1,7 +1,7 @@
 # NACASurrogate
 
 Regime-aware parametric surrogate model for NACA 4-digit aerofoils.
-Maps `(α, Re, thickness, regime_id) → (Cl, Cd)` using 200 OpenFOAM RANS runs as
+Maps `(α, Re, thickness, regime_id) → (Cl, Cd)` using 175 OpenFOAM RANS runs as
 training data, with one physics-validated CFD template per flow regime.
 
 ---
@@ -48,7 +48,7 @@ primary validation envelope remains [5×10⁵, 3×10⁶].
 
 ---
 
-## Sample allocation (200 LHS samples)
+## Sample allocation (175 LHS samples)
 
 LHS is performed independently inside each regime's bounding box, then
 concatenated. The 80/20 train/test split is stratified by regime so every
@@ -57,10 +57,15 @@ regime is represented in both splits.
 | Regime | N | Train | Test |
 |---|---|---|---|
 | A | 80 | 64 | 16 |
-| B | 50 | 40 | 10 |
+| B | 25 | 20 | 5 |
 | C | 30 | 24 | 6 |
 | D | 40 | 32 | 8 |
-| Total | 200 | 160 | 40 |
+| Total | 175 | 140 | 35 |
+
+Regime B was reduced from 50 to 25 samples: at ~300k–1M cells per case it is by
+far the most expensive regime, and 25 maximin-LHS points adequately cover its
+narrow `(α, Re, t)` box. Because each regime is sampled with an independent
+sub-seed, this change leaves regimes A/C/D bit-for-bit identical.
 
 Indices saved at DOE time and never modified. `random_state = 42`.
 
@@ -117,9 +122,9 @@ NACASurrogate/
 ├── README_complete.md
 ├── CLAUDE.md
 ├── environment.yml
-├── samples.csv               # 200 × [case_id, alpha_deg, Re, thickness, regime]
-├── train_idx.npy             # 160 training indices (stratified)
-├── test_idx.npy              # 40 test indices (stratified)
+├── samples.csv               # 175 × [case_id, alpha_deg, Re, thickness, regime]
+├── train_idx.npy             # 140 training indices (stratified)
+├── test_idx.npy              # 35 test indices (stratified)
 ├── dataset_clean.csv         # harvested CFD results (regime-tagged)
 │
 ├── scripts/
@@ -190,8 +195,8 @@ NACASurrogate/
 **Inputs:** none. **Outputs:** `samples.csv`, `train_idx.npy`, `test_idx.npy`.
 
 - LHS sampled independently in each regime's bounding box via `pyDOE2.lhs(d=3, samples=N, criterion='maximin')`
-- Per-regime allocation: A=80, B=50, C=30, D=40
-- Concatenate → 200 rows, columns `[case_id, alpha_deg, Re, thickness, regime]`
+- Per-regime allocation: A=80, B=25, C=30, D=40
+- Concatenate → 175 rows, columns `[case_id, alpha_deg, Re, thickness, regime]`
 - 80/20 split stratified by regime
 - `random_state = 42`
 
@@ -277,7 +282,7 @@ breakdown.
 | 2 | Validate Regime B CFD template (near-stall separated) | Phases 5–6 for B samples |
 | 3 | Validate Regime C CFD template (transitional) | Phases 5–6 for C samples |
 | 4 | Validate Regime D CFD template (high-Re) | Phases 5–6 for D samples |
-| 5 | Generate full 200-case dataset | Phase 6 |
+| 5 | Generate full 175-case dataset | Phase 6 |
 | 6 | Train and validate the unified surrogate | — |
 
 Phase 1 (Regime A) is the active focus and must be locked before any other

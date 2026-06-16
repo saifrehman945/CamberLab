@@ -15,8 +15,8 @@ treatment, y+ target, mesh strategy). Samples from all regimes are then merged
 into a single ML-ready dataset, with `regime_id` encoded as an input feature.
 
 It replaces expensive OpenFOAM RANS simulations with fast data-driven models
-(GP, RF, MLP, Kriging) trained on a 200-sample Latin Hypercube dataset spanning
-the four regimes.
+(GP, RF, MLP, Kriging) trained on a 175-sample Latin Hypercube dataset spanning
+the four regimes (per-regime allocation A=80, B=25, C=30, D=40).
 
 Full design rationale: `README_complete.md`. Quick design summary: `README.md`.
 
@@ -646,7 +646,7 @@ joblib.dump(preproc, MODELS_DIR / "preprocessor.joblib")
 
 ### Train-test discipline
 
-The 40 test samples saved in `test_idx.npy` at DOE time are sacred:
+The 35 test samples saved in `test_idx.npy` at DOE time are sacred:
 - Never train on them
 - Never use them to select hyperparameters (use cross-validation on the training set only)
 - Never re-run CFD based on test set performance
@@ -855,7 +855,7 @@ The pipeline is implemented and validated regime-by-regime:
 | 2 | Lock Regime B template (near-stall) | `validation/regime_B/report.md` |
 | 3 | Lock Regime C template (transitional) | `validation/regime_C/report.md` |
 | 4 | Lock Regime D template (high-Re) | `validation/regime_D/report.md` |
-| 5 | Generate full 200-case dataset | `dataset_clean.csv` |
+| 5 | Generate full 175-case dataset | `dataset_clean.csv` |
 | 6 | Train and validate unified surrogate | `results/` |
 
 A regime is **locked** when its NACA0012 probe cases (table in `README.md`)

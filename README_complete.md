@@ -264,10 +264,10 @@ bounding box, then concatenated:
 | Regime | N | Train | Test |
 |---|---|---|---|
 | A | 80 | 64 | 16 |
-| B | 50 | 40 | 10 |
+| B | 25 | 20 | 5 |
 | C | 30 | 24 | 6 |
 | D | 40 | 32 | 8 |
-| **Total** | **200** | **160** | **40** |
+| **Total** | **175** | **140** | **35** |
 
 The 80/20 train/test split is stratified by regime, so each regime contributes
 its 20% to the test set. This is critical — a random global split would give
@@ -281,9 +281,11 @@ an empty C test set under bad luck and prevent per-regime error reporting.
 - Regime A is largest because it covers the broadest practical operating range
   and gives the surrogate the most leverage in the most-used part of the
   design space.
-- Regime B is moderately sized because each sample is the most expensive and
-  the surrogate is expected to be less accurate near stall regardless of
-  sample count.
+- Regime B is the smallest CFD-cost-driven allocation (25 samples, reduced
+  from an initial 50): each near-stall case runs at 300k–1M cells, by far the
+  most expensive in the study, and the surrogate is expected to be less
+  accurate near stall regardless of sample count. 25 maximin-LHS points still
+  cover its narrow `(α, Re, t)` box adequately.
 - Regime C is smallest because the regime is narrowest in Re and the CFD
   setup is the most fragile.
 - Regime D is medium because each sample is cheap (smallest mesh, fast
@@ -336,7 +338,7 @@ an empty C test set under bad luck and prevent per-regime error reporting.
 ```python
 for regime, n, bounds in [
     ("A", 80, ((0,8),  (1.5e6,3e6), (0.10,0.18))),
-    ("B", 50, ((10,16),(1e6,3e6),   (0.12,0.24))),
+    ("B", 25, ((10,16),(1e6,3e6),   (0.12,0.24))),
     ("C", 30, ((0,8),  (3e5,1e6),   (0.08,0.15))),
     ("D", 40, ((0,6),  (2e6,5e6),   (0.10,0.18))),
 ]:
@@ -484,7 +486,7 @@ Final figures and tables:
 | `surrogate_metrics.csv` | global + per-regime R², RMSE, MAE for all 8 model-output pairs |
 | `sobol_sensitivity.png` | first-order and total Sobol indices for Cl and Cd |
 | `ood_test.png` | Re = 4×10⁶ sweep (above Regime A's bound, inside D's bound) with all models + GP uncertainty band |
-| `learning_curve.png` | RMSE vs N_train ∈ {10,20,30,40,60,80,120,160} for GP and RF |
+| `learning_curve.png` | RMSE vs N_train ∈ {10,20,30,40,60,80,120,140} for GP and RF |
 | `stall_extrapolation.png` | Cl vs α ∈ [0°, 18°] with dashed line at α = 16° (training boundary) |
 
 ---
@@ -522,7 +524,7 @@ that regime's template is locked.**
 | 2 | B | `validation/regime_B/report.md` | Phases 5, 6 (for B) |
 | 3 | C | `validation/regime_C/report.md` | Phases 5, 6 (for C) |
 | 4 | D | `validation/regime_D/report.md` | Phases 5, 6 (for D) |
-| 5 | All | `dataset_clean.csv` (200 cases) | Phase 6 |
+| 5 | All | `dataset_clean.csv` (175 cases) | Phase 6 |
 | 6 | All | `results/` | — |
 
 **Phase 1 deliverables (Regime A):**
@@ -554,7 +556,7 @@ model artefact.
 
 ### Train/test discipline
 
-The 40 test samples in `test_idx.npy` are sacred:
+The 35 test samples in `test_idx.npy` are sacred:
 
 - Never train on them
 - Never use them to select hyperparameters (use CV on the training set only)
@@ -642,10 +644,10 @@ the per-case JSON is the source of truth for everything else.
 
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
-| 1 | Regime B (near-stall) does not converge in steady RANS | High | Lose 25% of dataset | Tighter relaxation; longer end-time; URANS as fallback; document failures rather than fake data |
+| 1 | Regime B (near-stall) does not converge in steady RANS | High | Lose ~14% of dataset (25/175) | Tighter relaxation; longer end-time; URANS as fallback; document failures rather than fake data |
 | 2 | `kkLOmega` unavailable in the local OpenFOAM 12 build | Medium | Regime C blocked | Fall back to `kOmegaSST` with low Tu and 0.1% turbulence intensity; log the substitution in metadata |
 | 3 | Validation references for low-Re NACA0012 are sparse | Medium | Phase 3 hard to lock | Cross-check against XFOIL with eN transition prediction |
-| 4 | Compute budget — Regime B/C cases at 1M cells × 50 samples = ~1500 core-hours | Medium | Long wall-clock time | Cap parallel jobs; budget per regime; checkpoint runs |
+| 4 | Compute budget — Regime B/C cases at up to ~1M cells (B=25, C=30 samples) dominate wall-clock time | Medium | Long wall-clock time | Cap parallel jobs; B reduced 50→25 to bound cost; budget per regime; checkpoint runs |
 | 5 | One-hot regime collinearity (sum-to-one) for linear submodels | Low | Numerical instability in some sklearn models | Drop one column for OLS-like models; not a problem for GP/RF/MLP/KRG |
 | 6 | Stratified split too small in Regime C (6 test samples) | Medium | Noisy per-regime metric | Report Regime C metrics with confidence intervals; bootstrap |
 | 7 | Mesh independence not established for Regime D's coarse mesh | Medium | Systematic bias in D | Run 3-mesh study in Phase 4 validation |
@@ -698,9 +700,9 @@ NACASurrogate/
 ├── README_complete.md            ← this file
 ├── CLAUDE.md                     ← LLM operating manual
 ├── environment.yml
-├── samples.csv                   ← 200 × [case_id, alpha_deg, Re, thickness, regime]
-├── train_idx.npy                 ← 160 stratified training indices
-├── test_idx.npy                  ← 40 stratified test indices
+├── samples.csv                   ← 175 × [case_id, alpha_deg, Re, thickness, regime]
+├── train_idx.npy                 ← 140 stratified training indices
+├── test_idx.npy                  ← 35 stratified test indices
 ├── dataset_clean.csv             ← harvested converged CFD results
 │
 ├── scripts/
@@ -793,14 +795,14 @@ The project is built phase by phase. Each phase has a definite deliverable.
 ### Phase 5 — Full dataset
 
 1. Run `01_generate_doe.py` → `samples.csv`
-2. Run `03–06` over all 200 samples in parallel
+2. Run `03–06` over all 175 samples in parallel
 3. Run `07_harvest_results.py` → `dataset_clean.csv`
 4. Audit: every case must have a `case_metadata.json` with `converged=true`
    OR a documented reason in the report
 
 ### Phase 6 — Surrogate
 
-1. `09_train_surrogates.py` — train 8 models on 160 training samples
+1. `09_train_surrogates.py` — train 8 models on 140 training samples
 2. `10_global_validation.py` — full figure suite
 3. Audit per-regime metrics; document gaps
 

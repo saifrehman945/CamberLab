@@ -2,7 +2,7 @@
 """
 Script: 01_doe.py
 Stage:  1 — Design of Experiments
-Purpose: Generate 200 LHS samples — per-regime allocation (A=80, B=50, C=30,
+Purpose: Generate 175 LHS samples — per-regime allocation (A=80, B=25, C=30,
          D=40), each drawn inside its own bounding box — then concatenate.
          Freeze a stratified 80/20 train/test split.
 
@@ -36,7 +36,7 @@ TEST_FRACTION = 0.2
 
 REGIME_SPEC: dict[str, dict] = {
     "A": {"n": 80, "alpha": (0.0,  8.0),  "Re": (1.5e6, 3.0e6), "thickness": (0.10, 0.18)},
-    "B": {"n": 50, "alpha": (10.0, 16.0), "Re": (1.0e6, 3.0e6), "thickness": (0.12, 0.24)},
+    "B": {"n": 25, "alpha": (10.0, 16.0), "Re": (1.0e6, 3.0e6), "thickness": (0.12, 0.24)},
     "C": {"n": 30, "alpha": (0.0,  8.0),  "Re": (3.0e5, 1.0e6), "thickness": (0.08, 0.15)},
     "D": {"n": 40, "alpha": (0.0,  6.0),  "Re": (2.0e6, 5.0e6), "thickness": (0.10, 0.18)},
 }
