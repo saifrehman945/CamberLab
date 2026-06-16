@@ -150,17 +150,51 @@ REGIME_MESH: dict[str, dict | None] = {
         # bl_field, near-wall spacing is set by y_plus_target + bl_growth_ratio
         # and the outer fill by the size knobs below.
         "topology":                 "bl_field",
-        "bl_thickness_factor":      2.0,    # BL field thickness = factor * delta_99
-        "max_growth_ratio":         1.20,   # cell-to-cell coarsening cap; ALL
+        # Raised 2.0 -> 4.0: the outermost BL cells were too small relative to the
+        # frontal-fill mesh, leaving a distorted annular region around the BL. A
+        # thicker BL field (more layers, larger BL-edge cell) hands off to the
+        # quad fill more gently. n_bl and h_bl_edge are derived from this.
+        "bl_thickness_factor":      4.0,    # BL field thickness = factor * delta_99
+        # Tightened 1.20 -> 1.15: this caps every cell-to-cell coarsening
+        # transition (airfoil->far, TE->surf, wake->far). Smaller -> smoother
+        # transition at the BL / fill interface (lower skewness & non-ortho).
+        "max_growth_ratio":         1.15,   # cell-to-cell coarsening cap; ALL
                                             # transitions (airfoil->far, TE->surf,
                                             # wake->far) are sized from this.
+        # Kept at 1.0. The BL-field -> fill interface smoothness is governed by
+        # max_growth_ratio (g) ALONE: bl_field grades every transition so per-cell
+        # growth never exceeds g, regardless of the far cell size (see af_grade in
+        # build_bl_mesh). Shrinking far_cell to 0.25 did NOT smooth the interface;
+        # it only flooded the ~8900c^2 far field with ~140k uniform 0.25c cells,
+        # pushing the mesh to ~400k cells and exhausting RAM. With g=1.15 doing the
+        # smoothing, 1.0 is the right asymptotic far size (~224k cells total).
         "far_cell_size":            1.0,    # chord multiples — max cell at far field
         "le_cluster_factor":        0.50,   # blunt-TE corner cell = factor * surf cell
         "le_refine_radius":         0.05,   # chord multiples around the TE corners
-        "wake_box_length":          12.0,   # chord multiples of fine wake corridor
-        "wake_box_halfwidth":       0.6,    # chord multiples above/below wake centreline
-        "wake_cell_size":           8.0,    # multiples of the surface cell in the corridor
+        # Wake corridor retuned for near-stall separated flow: longer (12 -> 20c so
+        # it stays refined 15-20c downstream), narrower (0.6 -> 0.5c) and much
+        # finer (8 -> 2x surf cell) to preserve wake vortical structures and cut
+        # interpolation error in the separated wake. Realised by the `box` field
+        # in bl_field.build_bl_mesh (Surface -> BL -> Wake -> Far size hierarchy).
+        "wake_box_length":          20.0,   # chord multiples of fine wake corridor
+        "wake_box_halfwidth":       0.5,    # chord multiples above/below wake centreline
+        "wake_cell_size":           2.0,    # multiples of the surface cell in the corridor
+                                            # NOTE: now the dominant cell-count cost
+                                            # (~135k over the 20c corridor). Raise to
+                                            # 3-4 to roughly halve total cells if RAM
+                                            # is tight; the wake stays well-resolved.
         "mesh_smoothing":           5,      # Laplacian smoothing passes on the fill
+
+        # --- meshing resource controls ------------------------------------
+        # recombine_algorithm: 1 = Blossom (best quality, heaviest RAM/CPU; the
+        # validated NACA0012 quality used it). Set to 0 (simple) to cut peak gmsh
+        # RAM dramatically on large meshes at a small quality cost.
+        "recombine_algorithm":      1,
+        # Hard ceiling on the estimated 3-D cell count. build_bl_mesh estimates
+        # the mesh size from the size field BEFORE meshing and aborts with an
+        # actionable error if it exceeds this, so a runaway never reaches gmsh and
+        # exhausts RAM. Overridable per run via env NACA_MESH_MAX_CELLS.
+        "max_mesh_cells":           1_200_000,
 
         # --- quality acceptance gates -------------------------------------
         # Realised on the verified bl_field mesh (NACA0012/Re=6e6): non-ortho

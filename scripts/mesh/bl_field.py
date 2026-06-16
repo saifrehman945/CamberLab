@@ -51,10 +51,17 @@ for this topology (see ``regime_parameters``).
 from __future__ import annotations
 
 import logging
+import math
+import os
 import time
 from pathlib import Path
 
 import numpy as np
+
+try:
+    import resource                       # POSIX-only; absent on Windows
+except ImportError:                       # pragma: no cover
+    resource = None
 
 from .boundary_layer import bl_thickness, cells_needed, first_cell_height
 from .geometry import farfield_points, naca_symmetric
@@ -63,6 +70,57 @@ log = logging.getLogger(__name__)
 
 # gmsh MSH-2.2 element type ids
 _TRI, _QUAD, _HEX, _PRISM = 2, 3, 5, 6
+
+
+# ---------------------------------------------------------------------------
+# RAM guards
+# ---------------------------------------------------------------------------
+# A fine bl_field mesh (low first cell + long refined wake + large domain) can
+# generate hundreds of thousands of cells; gmsh's Frontal-Delaunay-for-Quads +
+# Blossom recombination then needs gigabytes, enough to swap-thrash or OOM-kill
+# the whole machine. Two layers of protection: (1) cap gmsh's thread count (peak
+# RAM scales with parallel mesher threads) and optionally the process address
+# space, so a runaway fails instead of taking the box down; (2) estimate the
+# cell count from the size field and refuse to start a mesh over budget.
+
+def _apply_gmsh_resource_limits(gmsh_module) -> tuple[int, float | None]:
+    """Cap gmsh threads and, if ``NACA_MESH_MEM_GB`` is set, the process address
+    space (RLIMIT_AS). Returns (threads, mem_cap_bytes_or_None)."""
+    env_threads = os.environ.get("NACA_MESH_THREADS")
+    threads = (max(1, int(env_threads)) if env_threads
+               else max(1, min(4, os.cpu_count() or 4)))
+    gmsh_module.option.setNumber("General.NumThreads", threads)
+
+    mem_cap = None
+    mem_gb = os.environ.get("NACA_MESH_MEM_GB")
+    if mem_gb and resource is not None:
+        mem_cap = float(mem_gb) * (1024 ** 3)
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        new_hard = (int(mem_cap) if hard == resource.RLIM_INFINITY
+                    else min(int(mem_cap), hard))
+        resource.setrlimit(resource.RLIMIT_AS, (int(mem_cap), new_hard))
+    return threads, mem_cap
+
+
+def _estimate_2d_cells(cfg: dict, surf_cell: float, far_cell: float,
+                       wake_len: float, wake_hw: float, wake_cell: float,
+                       n_bl: int, perimeter: float, chord: float) -> int:
+    """Rough upper-bound estimate of the 2-D fill cell count from the size field.
+
+    Far field at ``far_cell`` over the (semicircle + downstream rectangle)
+    domain, the wake corridor at ``wake_cell``, and ``n_bl`` structured layers
+    around the airfoil perimeter. A 1.3x margin covers the graded ramp regions.
+    Conservative by design — meant to catch RAM-exhausting meshes, not to be
+    exact.
+    """
+    R = float(cfg["upstream_radius"]) * chord
+    Ld = float(cfg["downstream_length"]) * chord
+    H = float(cfg["transverse_extent"]) * chord
+    domain_area = 0.5 * math.pi * R * R + (Ld + chord) * (2.0 * H)
+    far_cells = domain_area / (far_cell ** 2)
+    wake_cells = (wake_len * 2.0 * wake_hw) / (wake_cell ** 2)
+    bl_cells = (perimeter / surf_cell) * n_bl
+    return int(1.3 * (far_cells + wake_cells + bl_cells))
 
 
 # ---------------------------------------------------------------------------
@@ -159,57 +217,86 @@ def _write_extruded_msh(
     def nid(node_1based: int, level: int) -> int:
         return node_1based + level * n            # node id at z-level `level`
 
-    head = [
-        "$MeshFormat", "2.2 0 8", "$EndMeshFormat",
-        "$PhysicalNames", "4",
-        '2 1 "frontAndBack"', '2 2 "aerofoil"',
-        '2 3 "freestream"', '3 4 "fluid"',
-        "$EndPhysicalNames",
-        "$Nodes", str((L + 1) * n),
-    ]
-    node_lines = [
-        f"{nid(i + 1, k)} {xy[i, 0]:.12g} {xy[i, 1]:.12g} {(dz * k / L):.12g}"
-        for k in range(L + 1) for i in range(n)
-    ]
-    node_lines.append("$EndNodes")
+    # Element/node counts are known analytically, so we can write the MSH header
+    # counts up front and STREAM every node and element line straight to disk in
+    # bounded batches. The previous version built one Python list holding every
+    # line and then "\n".join'd it into a single multi-hundred-MB string (peak
+    # ~2x that), which on a large mesh was a second RAM spike on top of gmsh.
+    n_cells = L * (len(quads) + len(tris))
+    n_elems = (n_cells                                   # volume hexes/prisms
+               + 2 * (len(quads) + len(tris))            # frontAndBack faces
+               + L * (len(af_edges) + len(out_edges)))   # lateral wall/far faces
 
-    elems: list[str] = []
-    eid = 0
+    BATCH = 65536
+    buf: list[str] = []
 
-    def emit(etype: int, phys: int, nodes) -> None:
-        nonlocal eid
-        eid += 1
-        elems.append(f"{eid} {etype} 2 {phys} {phys} " + " ".join(map(str, nodes)))
+    with path.open("w") as fh:
+        def flush() -> None:
+            if buf:
+                fh.write("\n".join(buf))
+                fh.write("\n")
+                buf.clear()
 
-    # --- volume cells (fluid, phys 4) ---
-    for k in range(L):
-        for q in quads:
-            a, b, c, d = (int(v) for v in q)
-            emit(_HEX, 4, [nid(a, k), nid(b, k), nid(c, k), nid(d, k),
-                           nid(a, k + 1), nid(b, k + 1), nid(c, k + 1), nid(d, k + 1)])
-        for t in tris:
-            a, b, c = (int(v) for v in t)
-            emit(_PRISM, 4, [nid(a, k), nid(b, k), nid(c, k),
-                             nid(a, k + 1), nid(b, k + 1), nid(c, k + 1)])
+        fh.write("\n".join([
+            "$MeshFormat", "2.2 0 8", "$EndMeshFormat",
+            "$PhysicalNames", "4",
+            '2 1 "frontAndBack"', '2 2 "aerofoil"',
+            '2 3 "freestream"', '3 4 "fluid"',
+            "$EndPhysicalNames",
+            "$Nodes", str((L + 1) * n),
+        ]) + "\n")
 
-    # --- frontAndBack patch (phys 1): z=0 bottom + z=dz top faces ---
-    for lvl in (0, L):
-        for q in quads:
-            a, b, c, d = (int(v) for v in q)
-            emit(_QUAD, 1, [nid(a, lvl), nid(b, lvl), nid(c, lvl), nid(d, lvl)])
-        for t in tris:
-            a, b, c = (int(v) for v in t)
-            emit(_TRI, 1, [nid(a, lvl), nid(b, lvl), nid(c, lvl)])
+        # --- nodes ---
+        for k in range(L + 1):
+            z = f"{dz * k / L:.12g}"
+            base = k * n
+            for i in range(n):
+                buf.append(f"{base + i + 1} {xy[i, 0]:.12g} {xy[i, 1]:.12g} {z}")
+                if len(buf) >= BATCH:
+                    flush()
+        flush()
+        fh.write("$EndNodes\n$Elements\n")
+        fh.write(f"{n_elems}\n")
 
-    # --- lateral wall / far-field faces ---
-    for phys, edges in ((2, af_edges), (3, out_edges)):
+        eid = 0
+
+        def emit(etype: int, phys: int, nodes) -> None:
+            nonlocal eid
+            eid += 1
+            buf.append(f"{eid} {etype} 2 {phys} {phys} " + " ".join(map(str, nodes)))
+            if len(buf) >= BATCH:
+                flush()
+
+        # --- volume cells (fluid, phys 4) ---
         for k in range(L):
-            for a, b in edges:
-                emit(_QUAD, phys, [nid(a, k), nid(b, k), nid(b, k + 1), nid(a, k + 1)])
+            for q in quads:
+                a, b, c, d = (int(v) for v in q)
+                emit(_HEX, 4, [nid(a, k), nid(b, k), nid(c, k), nid(d, k),
+                               nid(a, k + 1), nid(b, k + 1), nid(c, k + 1), nid(d, k + 1)])
+            for t in tris:
+                a, b, c = (int(v) for v in t)
+                emit(_PRISM, 4, [nid(a, k), nid(b, k), nid(c, k),
+                                 nid(a, k + 1), nid(b, k + 1), nid(c, k + 1)])
 
-    path.write_text("\n".join(head + node_lines + ["$Elements", str(eid)] + elems
-                              + ["$EndElements"]) + "\n")
-    return L * (len(quads) + len(tris))
+        # --- frontAndBack patch (phys 1): z=0 bottom + z=dz top faces ---
+        for lvl in (0, L):
+            for q in quads:
+                a, b, c, d = (int(v) for v in q)
+                emit(_QUAD, 1, [nid(a, lvl), nid(b, lvl), nid(c, lvl), nid(d, lvl)])
+            for t in tris:
+                a, b, c = (int(v) for v in t)
+                emit(_TRI, 1, [nid(a, lvl), nid(b, lvl), nid(c, lvl)])
+
+        # --- lateral wall / far-field faces ---
+        for phys, edges in ((2, af_edges), (3, out_edges)):
+            for k in range(L):
+                for a, b in edges:
+                    emit(_QUAD, phys, [nid(a, k), nid(b, k), nid(b, k + 1), nid(a, k + 1)])
+
+        flush()
+        fh.write("$EndElements\n")
+
+    return n_cells
 
 
 # ---------------------------------------------------------------------------
@@ -308,8 +395,10 @@ def build_bl_mesh(
     gmsh.clear()
     gmsh.model.add(case_dir.name)
     gmsh.option.setNumber("General.Terminal", 0)
+    threads, mem_cap = _apply_gmsh_resource_limits(gmsh)
     gmsh.option.setNumber("Mesh.Algorithm", 8)               # Frontal-Delaunay for Quads
-    gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 1)  # Blossom
+    gmsh.option.setNumber("Mesh.RecombinationAlgorithm",
+                          int(cfg.get("recombine_algorithm", 1)))  # 1=Blossom, 0=simple
     gmsh.option.setNumber("Mesh.RecombineAll", 1)
     gmsh.option.setNumber("Mesh.ElementOrder", 1)
     # Size comes only from the background field, not points/curvature/boundary.
@@ -332,7 +421,15 @@ def build_bl_mesh(
     C_af_lo = geo.addSpline([p_LE, *lo_inner, p_TE_LO])   # LE -> TE_LO
     C_te = geo.addLine(p_TE_UP, p_TE_LO)                  # blunt back wall
 
-    airfoil_curves = [C_af_up, C_te, C_af_lo]
+    airfoil_curves = [C_af_up, C_te, C_af_lo]   # wall patch + proximity refinement
+    # The BoundaryLayer field grows on the upper/lower surfaces ONLY; the blunt
+    # back wall (C_te) is deliberately excluded. Including it made the upper and
+    # lower wall-normal layers collide behind the TE into a fan singularity
+    # (high aspect-ratio, distorted cells, poor BL->wake handoff). With C_te out
+    # of the BL, the two surface BL strips terminate at the TE corners and fan
+    # cleanly into the wake fill, and the short blunt back is meshed by the
+    # frontal-quad algorithm (still a wall patch via airfoil_curves above).
+    bl_curves = [C_af_up, C_af_lo]
     loop_af = geo.addCurveLoop([C_af_up, C_te, -C_af_lo])
 
     # ---- far-field outer boundary (CCW: fluid on the left) --------------
@@ -397,15 +494,44 @@ def build_bl_mesh(
 
     # ---- boundary-layer field -------------------------------------------
     bl = F.add("BoundaryLayer")
-    F.setNumbers(bl, "CurvesList", airfoil_curves)
+    F.setNumbers(bl, "CurvesList", bl_curves)    # upper/lower only; C_te excluded
     F.setNumber(bl, "Size", h1)
     F.setNumber(bl, "Ratio", r_bl)
     F.setNumber(bl, "Thickness", bl_total)
     F.setNumber(bl, "Quads", 1)
-    # Fan the two convex blunt-TE corners so the BL turns the corner cleanly.
+    # Fan the two TE corners: with the blunt back out of the BL these are the
+    # free ends of the upper/lower BL strips, so the fan splays the terminating
+    # layers into the wake fill instead of collapsing them onto the back wall.
     F.setNumbers(bl, "FanPointsList", [p_TE_UP, p_TE_LO])
     F.setNumbers(bl, "PointsList", [p_LE, p_TE_UP, p_TE_LO])
     F.setAsBoundaryLayer(bl)
+
+    # ---- cell-count budget guard (fail before gmsh exhausts RAM) --------
+    def _arclen(pts: np.ndarray) -> float:
+        d = np.diff(pts, axis=0)
+        return float(np.sqrt((d ** 2).sum(axis=1)).sum())
+    perimeter = _arclen(upper) + _arclen(lower) + 2.0 * h_te
+    est_2d = _estimate_2d_cells(
+        cfg, surf_cell, far_cell, wake_len, wake_hw, wake_cell,
+        n_bl, perimeter, chord,
+    )
+    est_3d = est_2d * max(1, int(cfg["spanwise_layers"]))
+    budget = int(os.environ.get("NACA_MESH_MAX_CELLS",
+                                cfg.get("max_mesh_cells", 1_200_000)))
+    log.info(
+        "%s mesh-size estimate ~%d 3-D cells (budget %d; %d gmsh threads, "
+        "mem cap %s)",
+        case_dir.name, est_3d, budget, threads,
+        f"{mem_cap / 1024**3:.1f} GB" if mem_cap else "off",
+    )
+    if est_3d > budget:
+        raise RuntimeError(
+            f"{case_dir.name}: estimated ~{est_3d:,} cells exceeds the budget of "
+            f"{budget:,}; this mesh would likely exhaust RAM. Coarsen "
+            f"'wake_cell_size' (dominant cost) or 'far_cell_size', or raise the "
+            f"budget via 'max_mesh_cells' / env NACA_MESH_MAX_CELLS if the machine "
+            f"can handle it."
+        )
 
     # ---- 2-D mesh, then manual spanwise extrusion -----------------------
     gmsh.model.mesh.generate(2)
