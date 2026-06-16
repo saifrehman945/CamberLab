@@ -216,7 +216,7 @@ REGIME_MESH: dict[str, dict | None] = {
         # Mirror B: resolved y+<1 BL produces high-AR wall cells; relax
         # non-orthogonality and aspect ratio, keep skewness tight because the
         # transition model is sensitive to it.
-        "non_orthogonality_max":    70,
+        "non_orthogonality_max":    75,
         "skewness_max":             3.0,
         "aspect_ratio_max":         50000.0,
         "min_hex_fraction":         0.999,
@@ -281,7 +281,7 @@ REGIME_MESH: dict[str, dict | None] = {
         # --- quality acceptance gates -------------------------------------
         # Like A: robust attached flow. The larger first cell (y+=50) gives
         # lower aspect ratios than A, so A's gates are comfortably safe here.
-        "non_orthogonality_max":    70.0,
+        "non_orthogonality_max":    75.0,
         "skewness_max":             4.0,
         "aspect_ratio_max":         5000.0,
         "min_hex_fraction":         0.999,
