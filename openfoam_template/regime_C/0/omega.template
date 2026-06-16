@@ -1,0 +1,49 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  12
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       volScalarField;
+    location    "0";
+    object      omega;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// kkLOmega specific dissipation rate.
+// Freestream omega_inf = sqrt(kt_inf) / (C_mu^0.25 * L_t) with
+// L_t = 0.07 * chord and C_mu = 0.09 (scripts/04_run_cfd.py::
+// build_render_context), consistent with the regime-B formulation.
+// The wall BC is zeroGradient (NOT omegaWallFunction): on a fully-resolved
+// y+<1 mesh the kkLOmega model sets the near-wall omega internally, and the
+// canonical elipsekkLOmega tutorial uses zeroGradient at the wall.
+
+dimensions      [0 0 -1 0 0 0 0];
+
+internalField   uniform {{ OMEGAINF }};
+
+boundaryField
+{
+    freestream
+    {
+        type            inletOutlet;
+        inletValue      uniform {{ OMEGAINF }};
+        value           uniform {{ OMEGAINF }};
+    }
+
+    aerofoil
+    {
+        type            zeroGradient;
+    }
+
+    frontAndBack
+    {
+        type            empty;
+    }
+}
+
+// ************************************************************************* //

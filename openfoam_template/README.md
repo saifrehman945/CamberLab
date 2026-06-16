@@ -8,8 +8,8 @@ its `regime` field in `params.json` (see `scripts/04_run_cfd.py`).
 |--------------|--------|------------------|-------------------------------------------------|-----------|---------|
 | `regime_A/`  | A      | `SpalartAllmaras`| Wall functions (`nutUSpaldingWallFunction`)     | ~30       | 2000    |
 | `regime_B/`  | B      | `kOmegaSST`      | Low-Re (`kLowReWallFunction`, `omegaWallFunction`, `nutLowReWallFunction`) | <1 (≈0.5) | 5000    |
-| `regime_C/`  | C      | *(not yet)*      |                                                 |           |         |
-| `regime_D/`  | D      | *(not yet)*      |                                                 |           |         |
+| `regime_C/`  | C      | `kkLOmega`       | Fully resolved (`nutLowReWallFunction`; `kt`/`kl` fixedValue 0, `omega` zeroGradient) | <1 (≈0.5) | 4000    |
+| `regime_D/`  | D      | `SpalartAllmaras`| Wall functions (`nutUSpaldingWallFunction`)     | ~50       | 2000    |
 
 Regime classification at DOE time lives in `scripts/01_doe.py`; at inference
 time in `scripts/mesh/regime_parameters.py::classify_regime`. Mesh

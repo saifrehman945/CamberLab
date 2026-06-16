@@ -38,6 +38,10 @@ MESH_SPAN = 0.05
 NU = 1.5e-5
 RHO = 1.225
 TURBULENCE_INTENSITY = 0.01
+# Regime C (transitional low-Re) needs a clean-tunnel free-stream so the
+# laminar BL survives to form the separation bubble before transition; a 1%
+# free-stream would force premature bypass transition. CLAUDE.md §5 / §10.
+TURBULENCE_INTENSITY_BY_REGIME = {"C": 0.001}
 TURBULENCE_LENGTH_SCALE = 0.07 * CHORD
 CMU = 0.09
 DEFAULT_JOBS = 4
@@ -110,7 +114,9 @@ def load_params(case_dir: Path) -> dict[str, float | str]:
     }
 
 
-def build_render_context(alpha_deg: float, reynolds_number: float, nprocs: int) -> dict[str, str]:
+def build_render_context(
+    alpha_deg: float, reynolds_number: float, nprocs: int, regime: str = "A"
+) -> dict[str, str]:
     alpha_rad = math.radians(alpha_deg)
     u_inf = reynolds_number * NU / CHORD
     ux = u_inf * math.cos(alpha_rad)
@@ -120,7 +126,8 @@ def build_render_context(alpha_deg: float, reynolds_number: float, nprocs: int) 
     drag_x = math.cos(alpha_rad)
     drag_y = math.sin(alpha_rad)
 
-    k_inf = max(1.5 * (u_inf * TURBULENCE_INTENSITY) ** 2, 1e-10)
+    turbulence_intensity = TURBULENCE_INTENSITY_BY_REGIME.get(regime, TURBULENCE_INTENSITY)
+    k_inf = max(1.5 * (u_inf * turbulence_intensity) ** 2, 1e-10)
     omega_inf = max(
         math.sqrt(k_inf) / (CMU ** 0.25 * TURBULENCE_LENGTH_SCALE),
         1e-6,
@@ -182,7 +189,7 @@ def render_case(case_dir: Path, nprocs: int) -> None:
             f"No template for regime '{regime}': {template_dir} does not exist"
         )
 
-    context = build_render_context(params["alpha_deg"], params["Re"], nprocs)
+    context = build_render_context(params["alpha_deg"], params["Re"], nprocs, regime)
     copy_static_template_files(case_dir, template_dir)
     render_template_files(case_dir, context, template_dir)
 

@@ -1,0 +1,51 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  12
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       volScalarField;
+    location    "0";
+    object      kt;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// kkLOmega TURBULENT kinetic energy (field name is "kt", not "k", in
+// OpenFOAM 12's kkLOmega — verified against
+// $FOAM_TUTORIALS/incompressibleFluid/elipsekkLOmega).
+// Freestream kt_inf = 1.5 * (U_inf * Tu)^2 with Tu = 0.001 (0.1%, set for
+// regime C in scripts/04_run_cfd.py::build_render_context). The low clean-
+// tunnel turbulence level is essential: a higher Tu suppresses the laminar
+// boundary layer and forces premature transition. Wall value is a hard
+// zero (fully-resolved viscous sublayer).
+
+dimensions      [0 2 -2 0 0 0 0];
+
+internalField   uniform {{ KINF }};
+
+boundaryField
+{
+    freestream
+    {
+        type            inletOutlet;
+        inletValue      uniform {{ KINF }};
+        value           uniform {{ KINF }};
+    }
+
+    aerofoil
+    {
+        type            fixedValue;
+        value           uniform 0;
+    }
+
+    frontAndBack
+    {
+        type            empty;
+    }
+}
+
+// ************************************************************************* //

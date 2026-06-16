@@ -1,0 +1,64 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  12
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      fvSchemes;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// Regime C (transitional, kkLOmega, fully resolved). Bounded second-order
+// linearUpwindV for momentum (as in B) for stability through the laminar
+// separation bubble; the three transition-model scalars (kt, kl, omega) are
+// advected by bounded upwind (CLAUDE.md §5 — upwinded scalar fluxes keep the
+// delicate kt/kl/omega balance from oscillating in the pre-transitional BL).
+
+ddtSchemes
+{
+    default         steadyState;
+}
+
+gradSchemes
+{
+    default         Gauss linear;
+}
+
+divSchemes
+{
+    default         none;
+
+    div(phi,U)       bounded Gauss linearUpwindV grad(U);
+    div(phi,kt)      bounded Gauss upwind;
+    div(phi,kl)      bounded Gauss upwind;
+    div(phi,omega)   bounded Gauss upwind;
+    div((nuEff*dev2(T(grad(U))))) Gauss linear;
+}
+
+laplacianSchemes
+{
+    default         Gauss linear corrected;
+}
+
+interpolationSchemes
+{
+    default         linear;
+}
+
+snGradSchemes
+{
+    default         corrected;
+}
+
+wallDist
+{
+    method          meshWave;
+}
+
+// ************************************************************************* //

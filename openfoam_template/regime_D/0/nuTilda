@@ -1,0 +1,44 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  12
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       volScalarField;
+    location    "0";
+    object      nuTilda;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// Spalart–Allmaras freestream nuTilda ≈ 3 * nu_inf (nu_inf = 1.5e-5 m^2/s).
+// NASA TMR low-turbulence external-aero baseline; gives nut_inf/nu ≈ 0.21.
+
+dimensions      [0 2 -1 0 0 0 0];
+
+internalField   uniform 4.5e-05;
+
+boundaryField
+{
+    freestream
+    {
+        type            freestream;
+        freestreamValue uniform 4.5e-05;
+    }
+
+    aerofoil
+    {
+        type            fixedValue;
+        value           uniform 0;
+    }
+
+    frontAndBack
+    {
+        type            empty;
+    }
+}
+
+// ************************************************************************* //

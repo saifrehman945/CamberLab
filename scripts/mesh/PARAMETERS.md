@@ -543,3 +543,70 @@ When you tune one knob, others may need to follow:
 | Total cell count | `chord_pts_*`, `normal_pts`, `wake_pts`, `transition_wake_pts`, `te_blunt_pts` |
 | Farfield-influence error | `upstream_radius`, `transverse_extent`, `downstream_length` |
 | BL profile fidelity | `y_plus_target`, `normal_pts`, derived progression ratio |
+
+---
+
+## Regimes B / C / D — deltas from the A baseline
+
+All four regimes share the `c_grid_6block` topology and the A key shape; each
+regime tunes the knobs to its physics. B was finalised on `c_grid_6block` (the
+y+<1 wall is handled by finer `normal_pts` + relaxed quality gates, **not** a
+separate boundary-layer topology). C and D follow the same approach.
+
+The 6-block cell count is, to within `te_blunt`'s small contribution:
+
+```
+cells ≈ 2·(chord−1)(normal−1) + 2·(trans−1)(seam−1) + 2·(wake−1)(seam−1)
+        with seam = normal + te_blunt − 1
+```
+
+This reproduces B's realised 230,830 and A's ~108k exactly, so it is the tool
+used to size C/D before any meshing run.
+
+### Regime D — fully turbulent, high-Re attached (a leaner A)
+
+Wall functions at **y+ = 50** (`nutkWallFunction`, SA), mild α (0–6°), cheapest
+regime (50k–150k target).
+
+- **`normal_pts = 80` (vs A's 100).** y+=50 gives a larger first cell than A's
+  y+=30 (h1 ≈ 2.6e-4–6.2e-4 m across Re=2–5e6), so fewer wall-normal cells cover
+  the 20c domain while keeping the **solved** progression at ~1.11–1.14 — inside
+  [1.10, 1.25] and under the `bl_growth_ratio = 1.25` hint. This is the y+↔normal_pts
+  coupling: raise y+, you can lower normal_pts and stay in band.
+- **`chord_pts = 140`, `wake_pts = 180`, `transition_wake_length = 0.5`,
+  `transition_wake_pts = 90`.** Across-the-board reduction from A; the attached,
+  low-α flow doesn't need A's resolution. Lands ~70k cells (verified).
+- **`wake_progression = 1.018`** (vs A's 1.015): the lighter wake tolerates
+  slightly faster downstream coarsening.
+- **Quality gates = A's** (non-ortho 70, skew 4.0, AR 5000). The larger first
+  cell makes aspect ratios *lower* than A, so A's gates are comfortably safe.
+- **Advisory floor 40k** (under the 50k spec) so the realistic ~70k never sits
+  near a spurious warning — same precedent as A's 40k floor under its 80k spec.
+
+### Regime C — transitional low-Re (the finest regime)
+
+Fully-resolved walls at **y+ = 0.5** like B, but the governing physics (laminar
+separation bubble, transition onset) is **mid-chord and streamwise**, which drives
+three C-specific choices:
+
+- **`chord_pts = 320` — highest of any regime.** Streamwise resolution is the
+  priority for capturing the LSB and transition location, not the LE suction peak.
+- **`le_te_cluster = 0.12` (vs A/B's 0.09).** Nudged toward uniform so mid-chord
+  cells — where the bubble sits — are finer. Cost: a mildly smeared LE suction
+  peak, acceptable at C's low α (0–8°). This is the one grading law that differs
+  from A/B, and it is a deliberate physics choice, not a tuning accident.
+- **`te_blunt_pts = "auto"` (not B's explicit 60).** C spans thin airfoils
+  (t down to 0.08) at low Re, so the blunt-back half-thickness varies widely; the
+  adaptive solver must size it per case. A fixed int would be downgraded on nearly
+  every thin/low-Re sample.
+- **`normal_pts = 210`.** Low Re makes h1 *larger* than B at the same y+ (≈1.2e-5–
+  3.6e-5 m), so the wall stack is easier than B's; 210 cells give a gentle solved
+  progression ~1.05 (below the 1.08 hint — desirable for the thick laminar BL) and
+  land the structured grid at ~335k cells.
+- **Quality gates = B's** (non-ortho 90, skew 3.0, AR 5e5): resolved y+<1 BL means
+  high-AR wall cells; skewness kept tight because the transition model is sensitive.
+- **Advisory band 300k–1.2M.** Realised ~335k. As with B (accepted at 230k vs its
+  300k–1M spec), the structured grid is more efficient than the legacy
+  prism-layer-mesher estimate behind the metadata 500k–1.2M band; the floor is
+  lowered so the realistic count doesn't trip a warning. The upper bound is kept
+  from metadata as a genuine ceiling.

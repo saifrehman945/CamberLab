@@ -1,0 +1,35 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  12
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      momentumTransport;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// Regime C: transitional low-Re. k-kL-omega transition model (Walters &
+// Cokljat 2008). Fields: kt (turbulent KE), kl (laminar KE), omega, nut.
+// If kkLOmega is ever unavailable in the build, CLAUDE.md §5 prescribes a
+// kOmegaSST fallback with low-Re wall treatment and Tu ~ 0.1% — that would
+// be a separate template, logged in case_metadata.json. kkLOmega IS present
+// in this OpenFOAM 12 install (src/.../RAS/kkLOmega), so it is used directly.
+
+simulationType  RAS;
+
+RAS
+{
+    model           kkLOmega;
+
+    turbulence      on;
+
+    printCoeffs     on;
+}
+
+// ************************************************************************* //
