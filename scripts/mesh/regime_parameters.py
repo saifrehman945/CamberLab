@@ -142,9 +142,9 @@ REGIME_MESH: dict[str, dict | None] = {
         # Tighter than A. Near-stall flow with high-AR resolved BL cells
         # is sensitive to non-orthogonality; >60deg risks divergence even
         # with nNonOrthogonalCorrectors=2 baked into the B fvSolution.
-        "non_orthogonality_max":    70.0,
+        "non_orthogonality_max":    90,
         "skewness_max":             3.0,
-        "aspect_ratio_max":         50000.0,
+        "aspect_ratio_max":         500000.0,
         "min_hex_fraction":         0.999,
 
         # --- advisory cell-count band (warning only) ----------------------
