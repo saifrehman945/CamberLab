@@ -199,9 +199,9 @@ def run_solver(case_dirs: dict[str, Path], nprocs: int) -> None:
     if nprocs > 1:
         inner = (
             f"decomposePar -force > log.decomposePar 2>&1 && "
-            f"mpirun -np {nprocs} potentialFoam -initialiseUBCs -parallel "
+            f"mpirun --oversubscribe --allow-run-as-root -np {nprocs} potentialFoam -initialiseUBCs -parallel "
             f"> log.potentialFoam 2>&1 && "
-            f"mpirun -np {nprocs} foamRun -parallel "
+            f"mpirun --oversubscribe --allow-run-as-root -np {nprocs} foamRun -parallel "
             f"> log.foamRun 2>&1 && "
             f"reconstructPar -latestTime > log.reconstructPar 2>&1"
         )
