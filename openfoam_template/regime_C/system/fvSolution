@@ -14,12 +14,13 @@ FoamFile
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-// Regime C (transitional, kkLOmega). Like B, walls are fully resolved
-// (y+<1) so U/p are pre-conditioned by potentialFoam and relaxation is kept
-// conservative — the kt/kl/omega transition balance is sensitive to large
-// corrections. Relaxation matches B (A's 0.7/0.3 scaled by 0.7).
-// nNonOrthogonalCorrectors = 2 because C's mesh is gated at
-// non-orthogonality < 90 deg (REGIME_MESH["C"], like B).
+// Regime C (transitional, kkLOmega, SIMPLEC). Relaxation kept conservative:
+// the mesh carries many near-70-deg non-orthogonal faces (stiff pressure
+// system) and the kt/kl/omega transition balance is sensitive to large
+// corrections. An aggressive p=0.7/U=0.8 trial survived only the benign alpha=0
+// probe; Regime B diverged outright on comparable values, so C is dialled back
+// pre-emptively to a stable band (p 0.5, U 0.7, turbulence 0.5). Raise only
+// after higher-alpha probes are confirmed stable. nNonOrthogonalCorrectors = 2.
 
 solvers
 {
@@ -73,15 +74,15 @@ relaxationFactors
 {
     fields
     {
-        p               0.21;
+        p               0.5;
     }
 
     equations
     {
-        U               0.49;
-        kt              0.49;
-        kl              0.49;
-        omega           0.49;
+        U               0.7;
+        kt              0.5;
+        kl              0.5;
+        omega           0.5;
     }
 }
 

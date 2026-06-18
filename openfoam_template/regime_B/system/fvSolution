@@ -14,10 +14,15 @@ FoamFile
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-// Regime B (near-stall). Relaxation factors are A's values multiplied by
-// 0.7 (CLAUDE.md §5) for stability on resolved BL cells where separation
-// can drive transient residual spikes. nNonOrthogonalCorrectors raised to
-// 2 because B's mesh is gated at non-orthogonality < 60 deg (CLAUDE.md §7).
+// Regime B (near-stall, SIMPLEC). The y+<1 mesh has very high-aspect-ratio
+// wall cells (~25k at mid-chord), which makes the pressure Poisson system
+// stiff/ill-conditioned. Aggressive relaxation (an earlier p=0.7/U=0.9 trial)
+// diverged within ~8 iterations as GAMG failed to solve p. Relaxation is held
+// conservative — near the values that ran stably for 5000 iters (p~0.2/U~0.5)
+// but with p nudged up so SIMPLEC's pressure step is not over-starved. Raise
+// U toward 0.7 only once a run is confirmed stable. The spurious separated
+// branch is addressed by the finer near-wall mesh + seeded nut, not by hot
+// relaxation. nNonOrthogonalCorrectors = 2 for the mesh's non-orthogonality.
 
 solvers
 {
@@ -70,14 +75,14 @@ relaxationFactors
 {
     fields
     {
-        p               0.21;
+        p               0.3;
     }
 
     equations
     {
-        U               0.49;
-        k               0.49;
-        omega           0.49;
+        U               0.5;
+        k               0.5;
+        omega           0.5;
     }
 }
 

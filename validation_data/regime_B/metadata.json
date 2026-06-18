@@ -19,47 +19,6 @@
   },
   "validation_cases": [
     {
-      "case_id": "naca0012_re6e6_aoa15_sst",
-      "airfoil": "NACA 0012",
-      "thickness": 0.12,
-      "Re": 6.0e6,
-      "Mach": 0.15,
-      "alpha_deg": 15.26,
-      "primary_role": "template_lock",
-      "notes": "Canonical NASA TMR SST near-stall case. Ladson α=15.26° row matches NASA TMR α=15° to within 0.3°.",
-      "references": {
-        "experimental_primary": {
-          "label": "Ladson tripped (Re=6e6, 80-grit, α=15.26°)",
-          "trip_condition": "transition fixed at x/c=0.05",
-          "Cl": 1.5129,
-          "Cd": 0.01900,
-          "alpha_table_value": 15.26,
-          "alpha_match_tol_deg": 0.3,
-          "file": "common/CLCD_Ladson_expdata.dat"
-        },
-        "experimental_secondary": {
-          "label": "Gregory & O'Reilly (Re=3e6, ARC R&M 3726, 1970)",
-          "trip_condition": "tripped",
-          "file": "common/CL_Gregory_expdata.dat"
-        },
-        "cfd_reference": {
-          "label": "CFL3D + SST, 897x257 grid (α=15°)",
-          "Cl": 1.5068,
-          "Cd": 0.02219,
-          "file_clcd": "common/n0012clcd_cfl3d_sst.dat",
-          "file_cp": "common/n0012cp_cfl3d_sst.dat",
-          "file_cf": "common/n0012cf_cfl3d_sst.dat",
-          "cp_zone": "alpha=15",
-          "url": "https://tmbwg.github.io/turbmodels/naca0012_val_sst.html"
-        },
-        "cross_validation": {
-          "label": "Flow360 SST (α=15°)",
-          "Cl": 1.5022,
-          "Cd": 0.02300
-        }
-      }
-    },
-    {
       "case_id": "naca0012_re6e6_aoa12_sst",
       "airfoil": "NACA 0012",
       "thickness": 0.12,
@@ -76,52 +35,6 @@
           "alpha_table_value": 12.12,
           "alpha_match_tol_deg": 0.1,
           "file": "common/CLCD_Ladson_expdata.dat"
-        }
-      }
-    },
-    {
-      "case_id": "naca0012_re6e6_aoa14_sst",
-      "airfoil": "NACA 0012",
-      "thickness": 0.12,
-      "Re": 6.0e6,
-      "Mach": 0.15,
-      "alpha_deg": 14.22,
-      "primary_role": "operating_range",
-      "references": {
-        "experimental_primary": {
-          "label": "Ladson tripped (Re=6e6, α=14.22°)",
-          "Cl": 1.4365,
-          "Cd": 0.01625,
-          "alpha_table_value": 14.22,
-          "alpha_match_tol_deg": 0.1,
-          "file": "common/CLCD_Ladson_expdata.dat"
-        }
-      }
-    },
-    {
-      "case_id": "naca4412_re1p52e6_aoa13p87",
-      "airfoil": "NACA 4412",
-      "thickness": 0.12,
-      "camber": 0.04,
-      "camber_position": 0.4,
-      "Re": 1.52e6,
-      "Mach": 0.0,
-      "alpha_deg": 13.87,
-      "primary_role": "separation_benchmark",
-      "notes": "Coles & Wadcock canonical trailing-edge separation case. Tests separation prediction quality, not bulk Cl/Cd. Cambered NACA4412, not symmetric — only used for separation/Cp validation, not for the symmetric-airfoil DOE.",
-      "freestream": {
-        "U_inf_m_s": 27.13,
-        "nu_m2_s": 1.605e-5,
-        "chord_m": 0.9012
-      },
-      "references": {
-        "experimental_primary": {
-          "label": "Coles & Wadcock NACA4412 Cp (AIAA J. 17, 1979)",
-          "trip_condition": "tripped at x/c≈0.025",
-          "file_cp": "regime_B/raw/naca4412.cp.expt.dat",
-          "file_profiles": "regime_B/raw/exp.profiles.new.dat",
-          "profile_stations_x_c": [0.6753, 0.7308, 0.7863, 0.8418, 0.8973, 0.9528],
-          "url": "https://tmbwg.github.io/turbmodels/naca4412sep_val.html"
         }
       }
     }

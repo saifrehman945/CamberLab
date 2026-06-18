@@ -179,7 +179,12 @@ def build_c_grid(
     start_time = time.perf_counter()
 
     # ---- physics-derived spacings ----------------------------------------
-    h1 = first_cell_height(params["Re"], cfg["y_plus_target"], chord=chord)
+    # y_plus_mesh_factor (default 1.0) shrinks the meshing y+ below the
+    # physical target where the flat-plate Cf correlation under-predicts the
+    # true wall shear (e.g. Regime B's near-stall LE acceleration). The
+    # regime's recorded y_plus_target is unchanged; only the cell size is.
+    y_plus_mesh = cfg["y_plus_target"] * cfg.get("y_plus_mesh_factor", 1.0)
+    h1 = first_cell_height(params["Re"], y_plus_mesh, chord=chord)
 
     # ---- blunt trailing edge --------------------------------------------
     te_frac = float(cfg["te_chord_fraction"])
@@ -328,17 +333,44 @@ def build_c_grid(
         ) from exc
 
     # ---- seam (t_seam_up/lo) and outlet (c_outU/L) progression -----------
-    # These curves now span Ht with (normal_pts - 1 + n_blunt_cells) cells so
-    # they match the cell count of UTW/LTW's compound west side. Re-solve the
-    # progression to keep the first cell at the wake-centreline end matched
-    # to the airfoil-side h1.
+    # These curves span Ht with (normal_pts - 1 + n_blunt_cells) cells so they
+    # match the cell count of UTW/LTW's compound west side (transfinite needs
+    # equal COUNT, not equal grading).
+    #
+    # The wake-centreline transverse first cell is decoupled from the wall h1.
+    # Anchoring h1 (a y+<1 wall spacing, ~3e-7 for B/C) at the centreline is
+    # pointless there — the wake is not a wall — and it is the root cause of the
+    # mesh pathology: each wake block then spans h1 at its centreline (east/
+    # outlet) end and the blunt-TE spacing (~3e-4) at its TE (west) end, a
+    # ~1000x mismatch that the Coons interpolation reconciles with extreme
+    # aspect-ratio (>1e6) and near-90deg non-orthogonal cells along the
+    # centreline -> stiff pressure system / FPE. wake_centreline_h (regime
+    # param; None -> legacy h1 behaviour for A/D) sets a coarser centreline
+    # spacing that still resolves the wake. The airfoil BL is untouched: block
+    # U's wall cells and the te_nu/te_nl seams keep h1, so the shed shear layer
+    # stays fine right at the TE and only coarsens downstream.
     n_seam_cells = n_normal_cells + n_blunt_cells
-    r_seam = solve_progression(h1=h1, total_length=Ht, n_cells=n_seam_cells)
+    h_seam_first = cfg.get("wake_centreline_h") or h1
+    if h_seam_first < h1:
+        log.warning(
+            "%s: wake_centreline_h (%.3e) is finer than the wall h1 (%.3e); "
+            "this defeats the AR/non-orthogonality decoupling.",
+            case_dir.name, h_seam_first, h1,
+        )
+    r_seam = solve_progression(h1=h_seam_first, total_length=Ht, n_cells=n_seam_cells)
 
     # ---- gmsh setup ------------------------------------------------------
     gmsh.clear()
     gmsh.model.add(case_dir.name)
     gmsh.option.setNumber("General.Terminal", 0)
+    # Geometry.Tolerance is the node-coincidence threshold used when the geo
+    # kernel removes duplicate points on synchronize. Its default (1e-8) is
+    # RELATIVE to the domain bounding box (~50c here), so a first cell below
+    # ~5e-7 m makes wall-adjacent nodes look coincident and gmsh collapses them
+    # into degenerate (triangular) quads at the TE corner -> gmshToFoam fails.
+    # Regime B/C resolve y+<1 with first cells ~3e-7, so drop the tolerance well
+    # below that to keep legitimately-distinct near-wall nodes separate.
+    gmsh.option.setNumber("Geometry.Tolerance", 1e-12)
     gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
     gmsh.option.setNumber("Mesh.SaveAll", 0)
     gmsh.option.setNumber("Mesh.Algorithm", 8)               # Frontal-Delaunay-for-Quads (fallback)

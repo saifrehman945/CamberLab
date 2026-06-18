@@ -14,16 +14,23 @@ FoamFile
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
+// internalField seeded with the freestream eddy viscosity nut_inf = k_inf/omega_inf
+// (set in scripts/04_run_cfd.py::build_render_context) rather than 0. Starting
+// from nut=0 makes the first SIMPLE iterations effectively laminar and lets the
+// near-stall LE boundary layer separate before turbulence develops, trapping the
+// solver on the spurious fully-separated branch. nut is recomputed by the SST
+// model every iteration, so this only affects startup robustness.
+
 dimensions      [0 2 -1 0 0 0 0];
 
-internalField   uniform 0;
+internalField   uniform {{ NUTINF }};
 
 boundaryField
 {
     freestream
     {
         type            calculated;
-        value           uniform 0;
+        value           uniform {{ NUTINF }};
     }
 
     aerofoil

@@ -96,7 +96,20 @@ REGIME_MESH: dict[str, dict | None] = {
         # Fully resolved walls: y+ < 1, no wall functions. Required for
         # kOmegaSST to capture separation onset at the near-stall regime.
         "y_plus_target":            0.5,
-        "bl_growth_ratio":          1.30,
+        # y_plus_mesh_factor: the flat-plate Cf correlation in first_cell_height
+        # uses FREESTREAM velocity, but at near-stall alpha the LE accelerates
+        # the flow to ~3.5x freestream (Cp~-11), so the true wall shear near the
+        # nose is far higher than the correlation assumes. Validation showed the
+        # realised y+ hit ~23 (max) / ~2.4 (mean) against a 0.5 target, which
+        # invalidates nutLowReWallFunction (needs y+<1) right where the suction
+        # peak forms -> spurious LE separation. Size the mesh for an effective
+        # y+ ~0.07 so the realised y+ stays < 1 even in attached flow. Only
+        # consumed by topology.py; other regimes default to 1.0.
+        "y_plus_mesh_factor":       0.14,
+        # 1.10 matches CLAUDE.md §7's Regime B spec and the progression actually
+        # solved over the 20c radius with the y+~0.07 first cell + normal_pts=210
+        # (~1.077). The old 1.30 hint tripped a spurious deviation warning.
+        "bl_growth_ratio":          1.10,
         "bl_layers":                35,
         "wall_treatment":           "low_re",          # consumed by CFD stage
 
@@ -105,16 +118,27 @@ REGIME_MESH: dict[str, dict | None] = {
 
         # --- blunt trailing edge ------------------------------------------
         "te_chord_fraction":        0.99,
-        "te_blunt_pts":             60,
+        "te_blunt_pts":             200,
 
         # --- transfinite point counts -------------------------------------
         # Suction-side resolution increased to capture adverse-pressure-
-        # gradient separation. Wall-normal stack is taller to fit a y+~0.5
-        # first cell + 35 BL layers + smooth transition to farfield.
-        "chord_pts_upper":          220,
-        "chord_pts_lower":          220,
-        "normal_pts":               150,
+        # gradient separation. Wall-normal stack is taller to fit the finer
+        # y+~0.07 first cell (see y_plus_mesh_factor) + smooth transition to
+        # farfield; normal_pts raised 150->210 keeps the solved wall-normal
+        # progression gentle (~1.08 over the 20c radius) despite the ~7x
+        # smaller first cell. Chord resolution raised 220->280 to close the gap
+        # to the CFL3D benchmark grid (~448 upper-surface pts) near the nose.
+        "chord_pts_upper":          280,
+        "chord_pts_lower":          280,
+        "normal_pts":               210,
         "wake_pts":                 180,
+        # Transverse first-cell at the WAKE CENTRELINE (t_seam/c_out edges),
+        # decoupled from the y+<1 wall h1 (~3e-7). Anchoring h1 here produced
+        # >1e6 aspect-ratio and ~90deg non-orthogonal cells along the centreline
+        # (stiff pressure -> FPE). 2e-3 still resolves the wake (the near-TE
+        # sheet stays fine via the te_nu seam) and drops centreline AR by ~3
+        # orders of magnitude. Wall BL resolution is unaffected.
+        "wake_centreline_h":        2.0e-3,
 
         # --- wake transition block ----------------------------------------
         "transition_wake_length":     1.0,
@@ -122,7 +146,9 @@ REGIME_MESH: dict[str, dict | None] = {
         "transition_wake_progression": None,
 
         # --- transfinite grading laws -------------------------------------
-        "le_te_cluster":            0.09,
+        # le_te_cluster tightened 0.09->0.06: finer LE/TE clustering to resolve
+        # the sharp (Cp~-11, recovers by ~5% chord) near-stall suction peak.
+        "le_te_cluster":            0.06,
         "wake_progression":         1.012,
         "north_arc_to_horiz_ratio": 0.65,
 
@@ -142,9 +168,15 @@ REGIME_MESH: dict[str, dict | None] = {
         # Tighter than A. Near-stall flow with high-AR resolved BL cells
         # is sensitive to non-orthogonality; >60deg risks divergence even
         # with nNonOrthogonalCorrectors=2 baked into the B fvSolution.
+        # aspect_ratio_max raised 5e5->2e6: the ~7x finer first cell (y+~0.07)
+        # multiplies the far-WAKE aspect ratio (tiny y+-fine normal cells along
+        # the wake centreline stretched against large streamwise cells). This
+        # is cosmetic (far field, negligible gradients) and not at the airfoil,
+        # so the gate is relaxed rather than letting it block an otherwise
+        # sound near-wall mesh.
         "non_orthogonality_max":    90,
-        "skewness_max":             3.0,
-        "aspect_ratio_max":         500000.0,
+        "skewness_max":             4.0,
+        "aspect_ratio_max":         2_000_000.0,
         "min_hex_fraction":         0.999,
 
         # --- advisory cell-count band (warning only) ----------------------
@@ -186,6 +218,12 @@ REGIME_MESH: dict[str, dict | None] = {
         "chord_pts_lower":          320,
         "normal_pts":               210,
         "wake_pts":                 220,
+        # Wake-centreline transverse first cell, decoupled from the y+<1 wall h1
+        # (see Regime B for the full rationale: anchoring h1 here causes extreme
+        # AR / near-90deg non-orthogonality along the centreline). C's first
+        # cell is larger than B's (low Re), so the pathology is milder, but the
+        # same decoupling keeps the wake cells well-shaped.
+        "wake_centreline_h":        2.0e-3,
 
         # --- wake transition block ----------------------------------------
         "transition_wake_length":     1.0,

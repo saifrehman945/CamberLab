@@ -132,6 +132,13 @@ def build_render_context(
         math.sqrt(k_inf) / (CMU ** 0.25 * TURBULENCE_LENGTH_SCALE),
         1e-6,
     )
+    # Freestream eddy viscosity, used to SEED the nut internalField. Starting
+    # from nut=0 leaves the first SIMPLE iterations effectively laminar, which
+    # lets the near-stall LE boundary layer separate before the turbulence
+    # field develops — the solver then settles on the spurious fully-separated
+    # branch (Cl ~0.26 independent of alpha in B validation). Seeding nut with
+    # the freestream turbulent value keeps the BL energised through startup.
+    nut_inf = k_inf / omega_inf
 
     return {
         "UX": fmt(ux),
@@ -144,6 +151,7 @@ def build_render_context(
         "AREF": fmt(CHORD * MESH_SPAN),
         "KINF": fmt(k_inf),
         "OMEGAINF": fmt(omega_inf),
+        "NUTINF": fmt(nut_inf),
         "RHO": fmt(RHO),
         "NPROCS": str(nprocs),
     }

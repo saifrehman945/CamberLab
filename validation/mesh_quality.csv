@@ -1,2 +1,2 @@
 regime,case_id,airfoil,alpha_deg,Re,thickness,cells_total,non_orthogonality_max,skewness_max,aspect_ratio_max,first_cell_height,y_plus_target,bl_layers,bl_growth_ratio,mesh_runtime_s
-D,naca0012_re6e6_aoa0_sa_coarse,NACA 0012,0.0,6000000.0,0.12,69666,72.66074062,0.1548006437,3474.755943,0.0002228438938844894,50.0,15,1.25,0.7146889800023928
+B,naca0012_re6e6_aoa12_sst,NACA 0012,12.12,6000000.0,0.12,441390,85.16910652,3.907073496,6674.459825,3.1198145143828517e-07,0.5,35,1.1,5.220633669000023
