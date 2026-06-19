@@ -31,6 +31,7 @@ from scripts.validation.parsers import (
     load_naca4412_cp,
     load_residual_history,
     load_tmr_cp,
+    load_xfoil_cp,
 )
 from scripts.validation.compare import load_openfoam_cp
 
@@ -124,7 +125,10 @@ def plot_cp_comparison(
     plotted = False
     try:
         cp_cfd = load_openfoam_cp(case_dir)
-        ax.plot(cp_cfd["x_c"], cp_cfd["Cp"], "-", color=CFD_COLOR, label="CFD (foamRun)", lw=1.6)
+        # Surface-sample points are in face order, not chord order, so a
+        # connecting line would draw spurious cross-links — use markers.
+        ax.plot(cp_cfd["x_c"], cp_cfd["Cp"], ".", color=CFD_COLOR, ms=3,
+                label="CFD (foamRun)")
         plotted = True
     except FileNotFoundError as exc:
         log.info("no CFD Cp for %s (%s)", reference_case["case_id"], exc)
@@ -133,10 +137,23 @@ def plot_cp_comparison(
         ("experimental_primary",  REF_COLOR,       "s", "experimental"),
         ("cfd_reference",         SECONDARY_COLOR, "^", "CFD reference"),
         ("experimental_secondary",TERTIARY_COLOR,  "o", "exp (secondary)"),
+        ("engineering_reference", REF_COLOR,       "x", "XFOIL"),
     ]
     for role, color, marker, fallback_label in ref_styles:
         entry = refs.get(role)
-        if not entry or "file_cp" not in entry:
+        if not entry:
+            continue
+        # XFOIL engineering reference declares `expected_file`, not `file_cp`.
+        if entry.get("tool") == "xfoil" and "expected_file" in entry:
+            ref_path = VALIDATION_DATA_DIR / entry["expected_file"]
+            if not ref_path.exists():
+                continue
+            df = load_xfoil_cp(ref_path, entry.get("label", fallback_label))
+            ax.plot(df["x_c"], df["Cp"], marker, color=color, ms=4,
+                    label=entry.get("label", fallback_label), alpha=0.85)
+            plotted = True
+            continue
+        if "file_cp" not in entry:
             continue
         ref_path = VALIDATION_DATA_DIR / entry["file_cp"]
         if not ref_path.exists():

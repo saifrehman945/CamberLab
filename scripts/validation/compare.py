@@ -22,6 +22,8 @@ from scripts.validation.parsers import (
     load_naca4412_cp,
     load_tmr_clcd,
     load_tmr_cp,
+    load_xfoil_cp,
+    load_xfoil_polar,
 )
 
 log = logging.getLogger(__name__)
@@ -90,6 +92,12 @@ def compare_clcd(
     for role, entry in refs.items():
         cl_ref = entry.get("Cl")
         cd_ref = entry.get("Cd")
+        if cl_ref is None and cd_ref is None and entry.get("tool") == "xfoil":
+            # XFOIL engineering reference: Cl/Cd live in a polar summary CSV,
+            # matched by angle of attack rather than declared inline.
+            xf = _xfoil_clcd_from_polar(entry, out["alpha_deg"])
+            if xf is not None:
+                cl_ref, cd_ref = xf
         if cl_ref is None and cd_ref is None:
             continue
         out["references"].append({
@@ -138,16 +146,30 @@ def evaluate_tolerances(comparison: dict, tolerances: dict) -> dict:
 # Cp comparison
 # ---------------------------------------------------------------------------
 
+def _latest_time_dir(parent: Path) -> Path | None:
+    """Return the numerically-largest time-step subdirectory of `parent`."""
+    def time_key(d: Path) -> float:
+        try:
+            return float(d.name)
+        except ValueError:
+            return -1.0
+
+    time_dirs = sorted((d for d in parent.glob("*") if d.is_dir()), key=time_key)
+    return time_dirs[-1] if time_dirs else None
+
+
 def load_openfoam_cp(case_dir: Path | str) -> pd.DataFrame:
-    """Load a Cp distribution sampled from OpenFOAM (singleGraph function object).
+    """Load the airfoil-surface Cp distribution sampled by OpenFOAM.
 
-    Expected location:
-        case_dir/postProcessing/singleGraph/<lastTime>/aerofoil_p.xy
-    or  case_dir/postProcessing/singleGraph/<lastTime>/line_p.xy
+    Primary source is the `aerofoilSamples` surfaces function object
+    (raw format), which writes
+        case_dir/postProcessing/aerofoilSamples/<lastTime>/aerofoil.xy
+    with columns: face_x, face_y, face_z, p  (p kinematic, m²/s²). A legacy
+    `singleGraph` line sample (`*_p.xy`, 2 columns x, p) is used as a fallback.
 
-    The XY file has 2 columns: x and pressure (p, kinematic, m²/s² for incompressible).
-    We convert to Cp = (p - p_inf) / (0.5 * U_inf²) using the freestream from
-    case_dir/params.json (chord=1 implied).
+    Cp = (p - p_inf) / (0.5 * U_inf²), with the freestream speed taken from
+    case_dir/params.json (U_inf = Re·ν, chord = 1). Density factors out of the
+    incompressible kinematic form. Returns columns: x_c, Cp, U_inf, source.
     """
     case = Path(case_dir)
     import json
@@ -159,17 +181,30 @@ def load_openfoam_cp(case_dir: Path | str) -> pd.DataFrame:
     p_inf = 0.0            # kinematic pressure at far field is typically 0
     q_inf = 0.5 * U_inf ** 2  # density factors out in incompressible kinematic form
 
+    # --- Primary: surfaces (aerofoilSamples) raw output -------------------
+    samp_dir = case / "postProcessing" / "aerofoilSamples"
+    if samp_dir.exists():
+        last = _latest_time_dir(samp_dir)
+        xy = next(iter(last.glob("*.xy")), None) if last else None
+        if xy is not None:
+            raw = pd.read_csv(xy, sep=r"\s+", comment="#", header=None,
+                              engine="python")
+            # raw columns are face_x, face_y, face_z, p — x is first, p is last.
+            df = pd.DataFrame({"x_c": raw.iloc[:, 0].astype(np.float64)})
+            df["Cp"] = (raw.iloc[:, -1].astype(np.float64) - p_inf) / q_inf
+            df["U_inf"] = U_inf
+            df["source"] = f"OpenFOAM ({case.name})"
+            return df[["x_c", "Cp", "U_inf", "source"]]
+
+    # --- Fallback: legacy singleGraph line sample -------------------------
     sg_dir = case / "postProcessing" / "singleGraph"
     if not sg_dir.exists():
-        raise FileNotFoundError(f"singleGraph output not found in {case}")
-
-    # Pick the largest time-step directory
-    time_dirs = sorted(sg_dir.glob("*"), key=lambda d: float(d.name) if d.name.replace(".","").isdigit() else -1)
-    last = time_dirs[-1] if time_dirs else None
+        raise FileNotFoundError(
+            f"no aerofoilSamples or singleGraph Cp output found in {case}"
+        )
+    last = _latest_time_dir(sg_dir)
     if last is None:
         raise FileNotFoundError(f"no time-step output under {sg_dir}")
-
-    # Candidate filenames (depends on user's singleGraph dictionary name)
     candidates = list(last.glob("*_p.xy")) + list(last.glob("*p_*.xy"))
     if not candidates:
         raise FileNotFoundError(f"no *_p.xy or *p_*.xy file under {last}")
@@ -220,8 +255,48 @@ def compare_cp(
     }
 
 
+def _resolve_xfoil_polar(entry: dict) -> Path | None:
+    """Find the XFOIL polar CSV for an engineering_reference entry.
+
+    Prefers the explicit `expected_summary_file`; otherwise looks for a
+    `*_polar.csv` sibling of the entry's `expected_file` (the Cp dump). All
+    AoAs for one Reynolds number share a single polar, so a sibling glob is a
+    safe fallback for entries that only declare a Cp file.
+    """
+    summary = entry.get("expected_summary_file")
+    if summary:
+        return VALIDATION_DATA_DIR / summary
+    cp_file = entry.get("expected_file")
+    if cp_file:
+        cp_dir = (VALIDATION_DATA_DIR / cp_file).parent
+        polars = sorted(cp_dir.glob("*_polar.csv"))
+        if polars:
+            return polars[0]
+    return None
+
+
+def _xfoil_clcd_from_polar(entry: dict, alpha_deg: float) -> tuple[float, float] | None:
+    """Look up (Cl, Cd) for `alpha_deg` in an XFOIL polar CSV. None if unavailable."""
+    polar = _resolve_xfoil_polar(entry)
+    if polar is None or not polar.exists():
+        return None
+    df = load_xfoil_polar(polar)
+    match = df[np.isclose(df["alpha_deg"], alpha_deg, atol=0.05)]
+    if match.empty:
+        log.warning("XFOIL polar %s has no row for α=%.3f°", polar.name, alpha_deg)
+        return None
+    row = match.iloc[0]
+    return float(row["Cl"]), float(row["Cd"])
+
+
 def _load_reference_cp(refs: dict) -> pd.DataFrame | None:
     """Locate and load the Cp reference declared in a metadata.json entry."""
+    eng_ref = refs.get("engineering_reference") or {}
+    if eng_ref.get("tool") == "xfoil" and "expected_file" in eng_ref:
+        path = VALIDATION_DATA_DIR / eng_ref["expected_file"]
+        if path.exists():
+            return load_xfoil_cp(path, eng_ref.get("label", "XFOIL"))
+
     cfd_ref = refs.get("cfd_reference") or {}
     if "file_cp" in cfd_ref:
         path = VALIDATION_DATA_DIR / cfd_ref["file_cp"]

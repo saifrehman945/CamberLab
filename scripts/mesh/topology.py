@@ -1,38 +1,38 @@
 """
-Structured C+H 6-block transfinite mesh for a NACA airfoil (Regime A) with
-a blunt trailing edge.
+Structured C+H 10-block transfinite mesh for a NACA airfoil with a blunt
+trailing edge.
 
 Topology
 ========
 
-Six transfinite quad blocks. The airfoil is truncated at x = te_chord_fraction
+Ten transfinite quad blocks. The airfoil is truncated at x = te_chord_fraction
 so the trailing edge has a finite half-thickness h_te (NACA-4 thickness
 evaluated at the truncation x). The blunt back is a wall, split into
 upper (TE_UP -> TE_MID) and lower (TE_MID -> TE_LO) halves. The wake
-centreline starts at TE_MID. A short "transition wake" block sits between
-the airfoil-side blocks and the main wake blocks; it inherits the airfoil's
-TE chordwise spacing on its south face and grades outward to the main wake's
-spacing on its east face. Its west face is COMPOUND: the (tall) wall-normal
-seam te_nu/te_nl above/below the blunt corner, plus the (short) blunt-back
-half. The compound side has two segments but only 4 transfinite corners, so
-gmsh still meshes it as a structured quad with consistent (i,j) parametrics.
+centreline starts at TE_MID.
 
-                F_TOP_MID -- F_TOP_TE  -- T_TOP -- F_TOP_OUT
-                  /            |          |          |
-                 /             |          |          |
-                / Block U    UTW         UMW         |
-   F_LE_FAR --                |          |          |
-                / airfoil --  TE_UP +                |
-                              |    \                 |
-                              | (BB up)              |
-                              TE_MID -- T_MID --- OUT_MID
-                              | (BB lo)              |
-                              |    /                 |
-                / airfoil --  TE_LO +                |
-                \\             |          |          |
-                 \\ Block L   LTW         LMW         |
-                  \\          |          |          |
-                F_BOT_MID -- F_BOT_TE  -- T_BOT -- F_BOT_OUT
+The wake (transition + main, upper + lower) is split at y = +/- h_te into an
+INNER band (centreline -> h_te) and an OUTER band (h_te -> farfield):
+  - the inner band carries the blunt-TE cell count (blunt_pts), kept thin and
+    confined near the centreline so it no longer fans out into the far field;
+  - the outer band carries normal_pts, so the transition->main interface ties
+    to normal_pts (matching the airfoil wall-normal seam te_nu/te_nl).
+This avoids the old COMPOUND west side (te_nu + blunt back) whose summed count
+(normal_pts + n_blunt_cells) on the opposite east edge fanned out into extreme
+aspect-ratio / near-90deg cells. The inner blocks use the blunt-back grading on
+both transverse edges and the outer TRANSITION block uses te_nu grading on both
+(skew-free); only the outer MAIN block coarsens transversely toward the outlet
+(wake_centreline_h), a gentle far-field fan-out.
+
+                F_TOP_MID -- F_TOP_TE --- T_TOP ---- F_TOP_OUT
+                  /            | UTW_out  | UMW_out   |
+                / Block U      TE_UP ---- TI_UP ----- OI_UP     (y = +h_te)
+   F_LE_FAR --                 | UTW_in   | UMW_in    |
+                / airfoil      TE_MID --- T_MID ----- OUT_MID   (y = 0, wake CL)
+                \\             | LTW_in   | LMW_in    |
+                 \\ Block L    TE_LO ---- TI_LO ----- OI_LO     (y = -h_te)
+                  \\           | LTW_out  | LMW_out   |
+                F_BOT_MID -- F_BOT_TE --- T_BOT ---- F_BOT_OUT
 
 Curve direction conventions (start -> end)
 ------------------------------------------
@@ -47,46 +47,58 @@ Curve direction conventions (start -> end)
     C_arc_lo   : LE_FAR -> BOT_MID
     C_top_h    : TOP_MID -> TOP_TE
     C_bot_h    : BOT_MID -> BOT_TE
-    C_outU     : TOP_OUT -> OUT_MID
-    C_outL     : OUT_MID -> BOT_OUT
     C_top_trans  : TOP_TE -> T_TOP
     C_top_main   : T_TOP  -> TOP_OUT
     C_bot_trans  : BOT_TE -> T_BOT
     C_bot_main   : T_BOT  -> BOT_OUT
+    C_out_up_in  : OUT_MID -> OI_UP    (outlet, inner band, upper)
+    C_out_up_out : OI_UP   -> TOP_OUT  (outlet, outer band, upper)
+    C_out_lo_in  : OUT_MID -> OI_LO    (outlet, inner band, lower)
+    C_out_lo_out : OI_LO   -> BOT_OUT  (outlet, outer band, lower)
 
   Internal seams (interior to the fluid domain):
     C_le_rad     : LE_FAR -> LE_AF
-    C_te_nu      : TE_UP  -> TOP_TE   (vertical seam above blunt corner)
-    C_te_nl      : TE_LO  -> BOT_TE   (vertical seam below blunt corner)
+    C_te_nu      : TE_UP  -> TOP_TE   (wall-normal seam above blunt corner)
+    C_te_nl      : TE_LO  -> BOT_TE   (wall-normal seam below blunt corner)
     C_wake_trans : TE_MID -> T_MID    (wake centreline, transition block)
     C_wake_main  : T_MID  -> OUT_MID  (wake centreline, main block)
-    C_t_seam_up  : T_MID  -> T_TOP    (seam at transition->main interface)
-    C_t_seam_lo  : T_MID  -> T_BOT
+    C_hseam_t_up : TE_UP  -> TI_UP    (inner/outer seam @ +h_te, transition)
+    C_hseam_t_lo : TE_LO  -> TI_LO    (inner/outer seam @ -h_te, transition)
+    C_hseam_m_up : TI_UP  -> OI_UP    (inner/outer seam @ +h_te, main)
+    C_hseam_m_lo : TI_LO  -> OI_LO    (inner/outer seam @ -h_te, main)
+    C_vseam_t_up_in  : T_MID -> TI_UP (transition->main interface, inner, upper)
+    C_vseam_t_up_out : TI_UP -> T_TOP (transition->main interface, outer, upper)
+    C_vseam_t_lo_in  : T_MID -> TI_LO (transition->main interface, inner, lower)
+    C_vseam_t_lo_out : TI_LO -> T_BOT (transition->main interface, outer, lower)
 
 Block loops (signed curve tags, CCW with interior on the left)
 --------------------------------------------------------------
-  Block U   : [+af_up,       +te_nu,     -top_h,      -arc_up,      +le_rad]
-  Block L   : [+arc_lo,      +bot_h,     -te_nl,      -af_lo,       -le_rad]
-  Block UTW : [+wake_trans,  +t_seam_up, -top_trans,  -te_nu,       +te_blunt_up]
-  Block UMW : [+wake_main,   -outU,      -top_main,   -t_seam_up]
-  Block LTW : [+bot_trans,   -t_seam_lo, -wake_trans, +te_blunt_lo, +te_nl]
-  Block LMW : [+bot_main,    -outL,      -wake_main,  +t_seam_lo]
+  Block U    : [+af_up,      +te_nu,           -top_h,       -arc_up, +le_rad]
+  Block L    : [+arc_lo,     +bot_h,           -te_nl,       -af_lo,  -le_rad]
+  Block UTW_in : [+wake_trans, +vseam_t_up_in,  -hseam_t_up, +te_blunt_up]
+  Block UTW_out: [+hseam_t_up,  +vseam_t_up_out, -top_trans,  -te_nu]
+  Block UMW_in : [+wake_main,   +out_up_in,      -hseam_m_up, -vseam_t_up_in]
+  Block UMW_out: [+hseam_m_up,  +out_up_out,     -top_main,   -vseam_t_up_out]
+  Block LTW_in : [+hseam_t_lo,  -vseam_t_lo_in,  -wake_trans, +te_blunt_lo]
+  Block LTW_out: [+bot_trans,   -vseam_t_lo_out, -hseam_t_lo, +te_nl]
+  Block LMW_in : [+hseam_m_lo,  -out_lo_in,      -wake_main,  +vseam_t_lo_in]
+  Block LMW_out: [+bot_main,    -out_lo_out,     -hseam_m_lo, +vseam_t_lo_out]
 
-The transfinite corners of UTW are (TE_MID, T_MID, T_TOP, TOP_TE); TE_UP is
-an intermediate point on UTW's west compound side. Likewise the corners of
-LTW are (BOT_TE, T_BOT, T_MID, TE_MID) with TE_LO intermediate.
+Every wake block is a clean 4-corner quad; TE_UP/TE_LO are now corners of the
+inner transition blocks, so no compound sides remain.
 
 Transfinite consistency
 -----------------------
   N_af_up      = N_af_lo                                    = chord_pts
   N_arc + N_h - 1                                           = chord_pts
-  N_le_rad                                                  = normal_pts
-  N_te_nu      = N_te_nl                                    = normal_pts
-  N_te_blunt_up = N_te_blunt_lo                             = te_blunt_pts
-  N_t_seam_up  = N_t_seam_lo  = N_outU = N_outL
-                                = normal_pts + te_blunt_pts - 1
-  N_wake_trans = N_top_trans  = N_bot_trans                 = transition_wake_pts
-  N_wake_main  = N_top_main   = N_bot_main                  = wake_pts
+  N_le_rad     = N_te_nu = N_te_nl                          = normal_pts
+  N_te_blunt_up = N_te_blunt_lo                             = te_blunt_pts (blunt_pts)
+  OUTER transverse (h_te -> farfield), normal_pts:
+    N_vseam_t_up_out = N_vseam_t_lo_out = N_out_up_out = N_out_lo_out = normal_pts
+  INNER transverse (centreline -> h_te), blunt_pts:
+    N_vseam_t_up_in  = N_vseam_t_lo_in  = N_out_up_in  = N_out_lo_in  = blunt_pts
+  N_wake_trans = N_top_trans = N_bot_trans = N_hseam_t_* = transition_wake_pts
+  N_wake_main  = N_top_main  = N_bot_main  = N_hseam_m_* = wake_pts
 """
 
 from __future__ import annotations
@@ -332,24 +344,24 @@ def build_c_grid(
             f"Adjust te_chord_fraction or te_blunt_pts. Underlying error: {exc}"
         ) from exc
 
-    # ---- seam (t_seam_up/lo) and outlet (c_outU/L) progression -----------
-    # These curves span Ht with (normal_pts - 1 + n_blunt_cells) cells so they
-    # match the cell count of UTW/LTW's compound west side (transfinite needs
-    # equal COUNT, not equal grading).
+    # ---- outer-band outlet progression (wake_centreline_h) ---------------
+    # The wake is split at y = +/- h_te into an INNER band (near the centreline,
+    # carrying the blunt-TE cells) and an OUTER band (h_te -> farfield) carrying
+    # normal_pts cells, so the transition->main interface ties to normal_pts and
+    # the old compound-side count inflation (normal_pts + n_blunt_cells) is gone.
+    # That inflation was the skew trigger: the blunt cells, packed into [0, h_te]
+    # on the west edge, fanned out across the full 20c height on the east edge
+    # (coarse wake-centreline grading) over the short transition block -> extreme
+    # aspect-ratio / near-90deg non-orthogonal cells. (See the block section.)
     #
-    # The wake-centreline transverse first cell is decoupled from the wall h1.
-    # Anchoring h1 (a y+<1 wall spacing, ~3e-7 for B/C) at the centreline is
-    # pointless there — the wake is not a wall — and it is the root cause of the
-    # mesh pathology: each wake block then spans h1 at its centreline (east/
-    # outlet) end and the blunt-TE spacing (~3e-4) at its TE (west) end, a
-    # ~1000x mismatch that the Coons interpolation reconciles with extreme
-    # aspect-ratio (>1e6) and near-90deg non-orthogonal cells along the
-    # centreline -> stiff pressure system / FPE. wake_centreline_h (regime
-    # param; None -> legacy h1 behaviour for A/D) sets a coarser centreline
-    # spacing that still resolves the wake. The airfoil BL is untouched: block
-    # U's wall cells and the te_nu/te_nl seams keep h1, so the shed shear layer
-    # stays fine right at the TE and only coarsens downstream.
-    n_seam_cells = n_normal_cells + n_blunt_cells
+    # wake_centreline_h survives as the OUTER-MAIN outlet grading: the outer-main
+    # block grades its transverse first cell from h1 (transition interface, west)
+    # to wake_centreline_h (outlet, east), coarsening the far wake to control its
+    # aspect ratio so the y+<1 wall h1 (~3e-7 for B/C) does not run to the outlet.
+    # The transition block stays r_normal on BOTH transverse edges (skew-free),
+    # so the residual (gentle, far-field) fan-out is confined to the long main
+    # wake. None -> r_normal (legacy A/D behaviour, no coarsening).
+    L_outer = Ht - h_te
     h_seam_first = cfg.get("wake_centreline_h") or h1
     if h_seam_first < h1:
         log.warning(
@@ -357,7 +369,9 @@ def build_c_grid(
             "this defeats the AR/non-orthogonality decoupling.",
             case_dir.name, h_seam_first, h1,
         )
-    r_seam = solve_progression(h1=h_seam_first, total_length=Ht, n_cells=n_seam_cells)
+    r_seam_outer = solve_progression(
+        h1=h_seam_first, total_length=L_outer, n_cells=n_normal_cells
+    )
 
     # ---- gmsh setup ------------------------------------------------------
     gmsh.clear()
@@ -400,6 +414,17 @@ def build_c_grid(
     p_BOT_OUT = geo.addPoint(*ff.BOT_OUT, 0.0)
     p_OUT_MID = geo.addPoint(*ff.OUT_MID, 0.0)
 
+    # ---- inner/outer split points (wake bands at y = +/- h_te) -----------
+    # The transition->main interface (x_T) and the outlet (x_O) are each split
+    # at +/- h_te so the blunt-TE cells stay in a thin inner band near the
+    # centreline instead of fanning out across the full transverse height.
+    x_T = ff.T_MID[0]      # transition->main interface x
+    x_O = ff.OUT_MID[0]    # outlet x
+    p_TI_UP = geo.addPoint(x_T, +h_te, 0.0)
+    p_TI_LO = geo.addPoint(x_T, -h_te, 0.0)
+    p_OI_UP = geo.addPoint(x_O, +h_te, 0.0)
+    p_OI_LO = geo.addPoint(x_O, -h_te, 0.0)
+
     # ---- airfoil splines (LE -> truncated blunt TE) ----------------------
     # upper[-1] = TE_UP, lower[-1] = TE_LO; the spline endpoints are wired to
     # the corner points above so the airfoil mesh shares vertices with the
@@ -422,8 +447,11 @@ def build_c_grid(
     C_top_main  = geo.addLine(p_T_TOP,  p_TOP_OUT)
     C_bot_trans = geo.addLine(p_BOT_TE, p_T_BOT)
     C_bot_main  = geo.addLine(p_T_BOT,  p_BOT_OUT)
-    C_outU      = geo.addLine(p_TOP_OUT, p_OUT_MID)
-    C_outL      = geo.addLine(p_OUT_MID, p_BOT_OUT)
+    # Outlet split at y = +/- h_te into inner (near centreline) + outer bands.
+    C_out_up_in  = geo.addLine(p_OUT_MID, p_OI_UP)
+    C_out_up_out = geo.addLine(p_OI_UP,   p_TOP_OUT)
+    C_out_lo_in  = geo.addLine(p_OUT_MID, p_OI_LO)
+    C_out_lo_out = geo.addLine(p_OI_LO,   p_BOT_OUT)
 
     # ---- internal seam curves (wall-normal + wake centreline) ------------
     C_le_rad    = geo.addLine(p_LE_FAR, p_LE_AF)
@@ -431,8 +459,16 @@ def build_c_grid(
     C_te_nl     = geo.addLine(p_TE_LO,  p_BOT_TE)
     C_wake_trans = geo.addLine(p_TE_MID, p_T_MID)
     C_wake_main  = geo.addLine(p_T_MID,  p_OUT_MID)
-    C_t_seam_up  = geo.addLine(p_T_MID,  p_T_TOP)
-    C_t_seam_lo  = geo.addLine(p_T_MID,  p_T_BOT)
+    # Horizontal seams along y = +/- h_te separating the inner/outer wake bands.
+    C_hseam_t_up = geo.addLine(p_TE_UP, p_TI_UP)   # transition, upper
+    C_hseam_t_lo = geo.addLine(p_TE_LO, p_TI_LO)   # transition, lower
+    C_hseam_m_up = geo.addLine(p_TI_UP, p_OI_UP)   # main, upper
+    C_hseam_m_lo = geo.addLine(p_TI_LO, p_OI_LO)   # main, lower
+    # Vertical seams at the transition->main interface, split into inner/outer.
+    C_vseam_t_up_in  = geo.addLine(p_T_MID, p_TI_UP)
+    C_vseam_t_up_out = geo.addLine(p_TI_UP, p_T_TOP)
+    C_vseam_t_lo_in  = geo.addLine(p_T_MID, p_TI_LO)
+    C_vseam_t_lo_out = geo.addLine(p_TI_LO, p_T_BOT)
 
     # ---- transfinite line counts ----------------------------------------
     chord_pts = cfg["chord_pts_upper"]
@@ -446,9 +482,9 @@ def build_c_grid(
     wake_pts   = cfg["wake_pts"]
     trans_pts  = cfg["transition_wake_pts"]
     bump = float(cfg["le_te_cluster"])
-    # Combined node count along the UTW/LTW compound west sides and the
-    # corresponding east-side (t_seam) and outlet (c_out) edges.
-    seam_pts = normal_pts + n_blunt_cells
+    # Inner wake bands (y in [0, h_te]) carry the blunt-TE cell count (blunt_pts);
+    # outer bands (y in [h_te, Ht]) carry normal_pts so the transition->main
+    # interface ties to normal_pts. Both counts are already set above.
 
     # Airfoil — Bump law clusters at BOTH endpoints (LE and TE simultaneously).
     geo.mesh.setTransfiniteCurve(C_af_up, chord_pts, "Bump", bump)
@@ -469,24 +505,49 @@ def build_c_grid(
     geo.mesh.setTransfiniteCurve(C_bot_h,  n_h,   "Progression", 1.0)
 
     # Wall-normal seams — coef sign chosen so the small cell sits at the
-    # airfoil (or wake centreline) end of each curve.
-    #   curve            : start -> end                 small at  | coef sign
-    #   C_le_rad         : LE_FAR -> LE_AF              end       | -r_normal
-    #   C_te_nu          : TE_UP  -> TOP_TE             start     | +r_normal
-    #   C_te_nl          : TE_LO  -> BOT_TE             start     | +r_normal
-    # The t_seam/c_out edges now use seam_pts and r_seam so their cell count
-    # matches the compound (te_nu + te_blunt) west side of UTW/LTW.
-    #   C_t_seam_up      : T_MID  -> T_TOP              start     | +r_seam
-    #   C_t_seam_lo      : T_MID  -> T_BOT              start     | +r_seam
-    #   C_outU           : TOP_OUT -> OUT_MID           end       | -r_seam
-    #   C_outL           : OUT_MID -> BOT_OUT           start     | +r_seam
-    geo.mesh.setTransfiniteCurve(C_le_rad,    normal_pts, "Progression", -r_normal)
-    geo.mesh.setTransfiniteCurve(C_te_nu,     normal_pts, "Progression", +r_normal)
-    geo.mesh.setTransfiniteCurve(C_te_nl,     normal_pts, "Progression", +r_normal)
-    geo.mesh.setTransfiniteCurve(C_t_seam_up, seam_pts,   "Progression", +r_seam)
-    geo.mesh.setTransfiniteCurve(C_t_seam_lo, seam_pts,   "Progression", +r_seam)
-    geo.mesh.setTransfiniteCurve(C_outU,      seam_pts,   "Progression", -r_seam)
-    geo.mesh.setTransfiniteCurve(C_outL,      seam_pts,   "Progression", +r_seam)
+    # airfoil (wall-corner) end of each curve.
+    #   C_le_rad : LE_FAR -> LE_AF   small at end   | -r_normal
+    #   C_te_nu  : TE_UP  -> TOP_TE  small at start | +r_normal
+    #   C_te_nl  : TE_LO  -> BOT_TE  small at start | +r_normal
+    geo.mesh.setTransfiniteCurve(C_le_rad, normal_pts, "Progression", -r_normal)
+    geo.mesh.setTransfiniteCurve(C_te_nu,  normal_pts, "Progression", +r_normal)
+    geo.mesh.setTransfiniteCurve(C_te_nl,  normal_pts, "Progression", +r_normal)
+
+    # OUTER transverse band (h_te -> farfield): normal_pts cells, r_normal,
+    # small cell at the y=h_te (wall-corner) end — identical grading to
+    # te_nu/te_nl, so the outer TRANSITION block has matching distributions on
+    # both transverse edges (skew-free). The outer-MAIN outlet uses r_seam_outer
+    # (wake_centreline_h) so the far wake coarsens — gentle, far-field fan-out.
+    #   C_vseam_t_up_out : TI_UP   -> T_TOP    small at start (TI_UP)  | +r_normal
+    #   C_vseam_t_lo_out : TI_LO   -> T_BOT    small at start (TI_LO)  | +r_normal
+    #   C_out_up_out     : OI_UP   -> TOP_OUT  small at start (OI_UP)  | +r_seam_outer
+    #   C_out_lo_out     : OI_LO   -> BOT_OUT  small at start (OI_LO)  | +r_seam_outer
+    geo.mesh.setTransfiniteCurve(C_vseam_t_up_out, normal_pts, "Progression", +r_normal)
+    geo.mesh.setTransfiniteCurve(C_vseam_t_lo_out, normal_pts, "Progression", +r_normal)
+    geo.mesh.setTransfiniteCurve(C_out_up_out,     normal_pts, "Progression", +r_seam_outer)
+    geo.mesh.setTransfiniteCurve(C_out_lo_out,     normal_pts, "Progression", +r_seam_outer)
+
+    # INNER transverse band (centreline -> h_te): blunt_pts cells, r_blunt,
+    # small cell at the y=h_te end (continuity with te_nu at TE_UP) — identical
+    # grading to the blunt back, so the inner blocks have matching distributions
+    # on both transverse edges (skew-free) and the blunt-TE refinement stays
+    # confined to the thin near-centreline band.
+    #   C_vseam_t_up_in : T_MID   -> TI_UP   small at end (TI_UP)  | -r_blunt
+    #   C_vseam_t_lo_in : T_MID   -> TI_LO   small at end (TI_LO)  | -r_blunt
+    #   C_out_up_in     : OUT_MID -> OI_UP   small at end (OI_UP)  | -r_blunt
+    #   C_out_lo_in     : OUT_MID -> OI_LO   small at end (OI_LO)  | -r_blunt
+    geo.mesh.setTransfiniteCurve(C_vseam_t_up_in, blunt_pts, "Progression", -r_blunt)
+    geo.mesh.setTransfiniteCurve(C_vseam_t_lo_in, blunt_pts, "Progression", -r_blunt)
+    geo.mesh.setTransfiniteCurve(C_out_up_in,     blunt_pts, "Progression", -r_blunt)
+    geo.mesh.setTransfiniteCurve(C_out_lo_in,     blunt_pts, "Progression", -r_blunt)
+
+    # Horizontal seams (y = +/- h_te) inherit the streamwise grading of the band
+    # they border: transition seams match the transition block (small at the TE
+    # end), main seams match the main wake (small at the interface end).
+    geo.mesh.setTransfiniteCurve(C_hseam_t_up, trans_pts, "Progression", +r_wake_trans)
+    geo.mesh.setTransfiniteCurve(C_hseam_t_lo, trans_pts, "Progression", +r_wake_trans)
+    geo.mesh.setTransfiniteCurve(C_hseam_m_up, wake_pts,  "Progression", +r_wake_main)
+    geo.mesh.setTransfiniteCurve(C_hseam_m_lo, wake_pts,  "Progression", +r_wake_main)
 
     # Transition wake — small cells at TE end of each curve.
     geo.mesh.setTransfiniteCurve(C_wake_trans, trans_pts, "Progression", +r_wake_trans)
@@ -499,38 +560,53 @@ def build_c_grid(
     geo.mesh.setTransfiniteCurve(C_bot_main,  wake_pts, "Progression", +r_wake_main)
 
     # ---- block loops & surfaces -----------------------------------------
-    # UTW and LTW have 5-edge loops but only 4 transfinite corners; TE_UP
-    # (resp. TE_LO) sits as an intermediate point on the compound west side.
-    loop_U   = geo.addCurveLoop([+C_af_up,      +C_te_nu,     -C_top_h,    -C_arc_up,    +C_le_rad])
-    loop_L   = geo.addCurveLoop([+C_arc_lo,     +C_bot_h,     -C_te_nl,    -C_af_lo,     -C_le_rad])
-    loop_UTW = geo.addCurveLoop([+C_wake_trans, +C_t_seam_up, -C_top_trans, -C_te_nu,    +C_te_blunt_up])
-    loop_UMW = geo.addCurveLoop([+C_wake_main,  -C_outU,      -C_top_main,  -C_t_seam_up])
-    loop_LTW = geo.addCurveLoop([+C_bot_trans,  -C_t_seam_lo, -C_wake_trans, +C_te_blunt_lo, +C_te_nl])
-    loop_LMW = geo.addCurveLoop([+C_bot_main,   -C_outL,      -C_wake_main,  +C_t_seam_lo])
+    # U/L keep their 5-edge loops (north split into arc + horizontal run). The
+    # wake is now 8 clean 4-corner quads: each half (transition, main) is split
+    # at y = +/- h_te into an inner block (near centreline, blunt-TE band) and an
+    # outer block (normal_pts band). TE_UP/TE_LO are now true corners (of the
+    # inner transition blocks), so no compound 5-edge sides remain.
+    loop_U   = geo.addCurveLoop([+C_af_up,  +C_te_nu, -C_top_h, -C_arc_up, +C_le_rad])
+    loop_L   = geo.addCurveLoop([+C_arc_lo, +C_bot_h, -C_te_nl, -C_af_lo,  -C_le_rad])
 
-    S_U   = geo.addPlaneSurface([loop_U])
-    S_L   = geo.addPlaneSurface([loop_L])
-    S_UTW = geo.addPlaneSurface([loop_UTW])
-    S_UMW = geo.addPlaneSurface([loop_UMW])
-    S_LTW = geo.addPlaneSurface([loop_LTW])
-    S_LMW = geo.addPlaneSurface([loop_LMW])
+    loop_UTW_in  = geo.addCurveLoop([+C_wake_trans, +C_vseam_t_up_in,  -C_hseam_t_up, +C_te_blunt_up])
+    loop_UTW_out = geo.addCurveLoop([+C_hseam_t_up,  +C_vseam_t_up_out, -C_top_trans,  -C_te_nu])
+    loop_UMW_in  = geo.addCurveLoop([+C_wake_main,  +C_out_up_in,      -C_hseam_m_up, -C_vseam_t_up_in])
+    loop_UMW_out = geo.addCurveLoop([+C_hseam_m_up, +C_out_up_out,     -C_top_main,   -C_vseam_t_up_out])
 
-    source_surfaces = [S_U, S_L, S_UTW, S_UMW, S_LTW, S_LMW]
-    loop_sizes      = [5,    5,    5,      4,      5,      4]
+    loop_LTW_in  = geo.addCurveLoop([+C_hseam_t_lo, -C_vseam_t_lo_in,  -C_wake_trans, +C_te_blunt_lo])
+    loop_LTW_out = geo.addCurveLoop([+C_bot_trans,  -C_vseam_t_lo_out, -C_hseam_t_lo, +C_te_nl])
+    loop_LMW_in  = geo.addCurveLoop([+C_hseam_m_lo, -C_out_lo_in,      -C_wake_main,  +C_vseam_t_lo_in])
+    loop_LMW_out = geo.addCurveLoop([+C_bot_main,   -C_out_lo_out,     -C_hseam_m_lo, +C_vseam_t_lo_out])
 
-    # Transfinite-surface corners (CCW order picks the parametric (i,j) axes).
-    geo.mesh.setTransfiniteSurface(S_U,   "Left",
-                                    [p_LE_AF,  p_TE_UP,  p_TOP_TE,  p_LE_FAR])
-    geo.mesh.setTransfiniteSurface(S_L,   "Left",
-                                    [p_LE_FAR, p_BOT_TE, p_TE_LO,   p_LE_AF])
-    geo.mesh.setTransfiniteSurface(S_UTW, "Left",
-                                    [p_TE_MID, p_T_MID,  p_T_TOP,   p_TOP_TE])
-    geo.mesh.setTransfiniteSurface(S_UMW, "Left",
-                                    [p_T_MID,  p_OUT_MID, p_TOP_OUT, p_T_TOP])
-    geo.mesh.setTransfiniteSurface(S_LTW, "Left",
-                                    [p_BOT_TE, p_T_BOT,  p_T_MID,   p_TE_MID])
-    geo.mesh.setTransfiniteSurface(S_LMW, "Left",
-                                    [p_T_BOT,  p_BOT_OUT, p_OUT_MID, p_T_MID])
+    S_U       = geo.addPlaneSurface([loop_U])
+    S_L       = geo.addPlaneSurface([loop_L])
+    S_UTW_in  = geo.addPlaneSurface([loop_UTW_in])
+    S_UTW_out = geo.addPlaneSurface([loop_UTW_out])
+    S_UMW_in  = geo.addPlaneSurface([loop_UMW_in])
+    S_UMW_out = geo.addPlaneSurface([loop_UMW_out])
+    S_LTW_in  = geo.addPlaneSurface([loop_LTW_in])
+    S_LTW_out = geo.addPlaneSurface([loop_LTW_out])
+    S_LMW_in  = geo.addPlaneSurface([loop_LMW_in])
+    S_LMW_out = geo.addPlaneSurface([loop_LMW_out])
+
+    source_surfaces = [S_U, S_L,
+                       S_UTW_in, S_UTW_out, S_UMW_in, S_UMW_out,
+                       S_LTW_in, S_LTW_out, S_LMW_in, S_LMW_out]
+    loop_sizes      = [5, 5, 4, 4, 4, 4, 4, 4, 4, 4]
+
+    # Transfinite-surface corners (CCW; matches each loop's corner order).
+    geo.mesh.setTransfiniteSurface(S_U, "Left", [p_LE_AF,  p_TE_UP,  p_TOP_TE, p_LE_FAR])
+    geo.mesh.setTransfiniteSurface(S_L, "Left", [p_LE_FAR, p_BOT_TE, p_TE_LO,  p_LE_AF])
+
+    geo.mesh.setTransfiniteSurface(S_UTW_in,  "Left", [p_TE_MID, p_T_MID,   p_TI_UP,   p_TE_UP])
+    geo.mesh.setTransfiniteSurface(S_UTW_out, "Left", [p_TE_UP,  p_TI_UP,   p_T_TOP,   p_TOP_TE])
+    geo.mesh.setTransfiniteSurface(S_UMW_in,  "Left", [p_T_MID,  p_OUT_MID, p_OI_UP,   p_TI_UP])
+    geo.mesh.setTransfiniteSurface(S_UMW_out, "Left", [p_TI_UP,  p_OI_UP,   p_TOP_OUT, p_T_TOP])
+
+    geo.mesh.setTransfiniteSurface(S_LTW_in,  "Left", [p_TE_LO,  p_TI_LO,   p_T_MID,   p_TE_MID])
+    geo.mesh.setTransfiniteSurface(S_LTW_out, "Left", [p_BOT_TE, p_T_BOT,   p_TI_LO,   p_TE_LO])
+    geo.mesh.setTransfiniteSurface(S_LMW_in,  "Left", [p_TI_LO,  p_OI_LO,   p_OUT_MID, p_T_MID])
+    geo.mesh.setTransfiniteSurface(S_LMW_out, "Left", [p_T_BOT,  p_BOT_OUT, p_OI_LO,   p_TI_LO])
 
     for s in source_surfaces:
         geo.mesh.setRecombine(2, s)
@@ -548,7 +624,9 @@ def build_c_grid(
 
     # ---- slice extrude result by per-block loop size --------------------
     offsets = _block_offsets(loop_sizes)
-    block_names = ["U", "L", "UTW", "UMW", "LTW", "LMW"]
+    block_names = ["U", "L",
+                   "UTW_in", "UTW_out", "UMW_in", "UMW_out",
+                   "LTW_in", "LTW_out", "LMW_in", "LMW_out"]
     per_block: dict[str, dict] = {}
     for name, off, n in zip(block_names, offsets, loop_sizes):
         block_entities = extr[off : off + 2 + n]
@@ -565,7 +643,7 @@ def build_c_grid(
     farfield_curves = {
         C_arc_up, C_arc_lo, C_top_h, C_bot_h,
         C_top_trans, C_top_main, C_bot_trans, C_bot_main,
-        C_outU, C_outL,
+        C_out_up_in, C_out_up_out, C_out_lo_in, C_out_lo_out,
     }
 
     aerofoil_tags: set[int] = set()
@@ -639,7 +717,7 @@ def build_c_grid(
     return {
         "first_cell_height":          float(h1),
         "normal_progression":         float(r_normal),
-        "seam_progression":           float(r_seam),
+        "seam_progression":           float(r_seam_outer),
         "wake_progression":           float(r_wake_main),
         "transition_wake_progression": float(r_wake_trans),
         "h_te_airfoil_target":        float(h_te_target),
@@ -651,7 +729,8 @@ def build_c_grid(
         "te_blunt_progression":       float(r_blunt),
         "n_arc_pts":                  int(n_arc),
         "n_horiz_pts":                int(n_h),
-        "n_seam_pts":                 int(seam_pts),
+        "n_seam_pts":                 int(normal_pts),
+        "n_blunt_inner_pts":          int(blunt_pts),
         "cell_count_gmsh":            cell_count,
         "mesh_runtime_s":             float(runtime),
     }

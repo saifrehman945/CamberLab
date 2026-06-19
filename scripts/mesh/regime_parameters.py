@@ -138,7 +138,7 @@ REGIME_MESH: dict[str, dict | None] = {
         # (stiff pressure -> FPE). 2e-3 still resolves the wake (the near-TE
         # sheet stays fine via the te_nu seam) and drops centreline AR by ~3
         # orders of magnitude. Wall BL resolution is unaffected.
-        "wake_centreline_h":        2.0e-3,
+        "wake_centreline_h":        None,
 
         # --- wake transition block ----------------------------------------
         "transition_wake_length":     1.0,
@@ -223,7 +223,7 @@ REGIME_MESH: dict[str, dict | None] = {
         # AR / near-90deg non-orthogonality along the centreline). C's first
         # cell is larger than B's (low Re), so the pathology is milder, but the
         # same decoupling keeps the wake cells well-shaped.
-        "wake_centreline_h":        2.0e-3,
+        "wake_centreline_h":        None,
 
         # --- wake transition block ----------------------------------------
         "transition_wake_length":     1.0,

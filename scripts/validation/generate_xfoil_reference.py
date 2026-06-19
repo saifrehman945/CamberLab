@@ -65,6 +65,16 @@ def airfoil_tag(airfoil: str) -> str:
     return airfoil.replace(" ", "").lower()
 
 
+def re_tag(Re: float) -> str:
+    """Compact Reynolds tag: 5e5 → 're5e5', 1e6 → 're1e6'."""
+    return "re" + f"{Re:.0e}".replace("e+0", "e").replace("e-0", "e-").replace("e+", "e")
+
+
+def alpha_tag(alpha: float) -> str:
+    """Filesystem-safe AoA tag matching metadata: 4.0 → 'aoa4', -2.5 → 'aoam2p5'."""
+    return "aoa" + f"{alpha:g}".replace("-", "m").replace(".", "p")
+
+
 def write_xfoil_script(
     workdir: Path,
     airfoil: str,
@@ -185,7 +195,7 @@ def main() -> int:
     REGIME_C_RAW.mkdir(parents=True, exist_ok=True)
 
     tag = airfoil_tag(args.airfoil)
-    polar_csv_out = REGIME_C_RAW / f"xfoil_{tag}_re{args.re:.0e}_polar.csv".replace("+0", "")
+    polar_csv_out = REGIME_C_RAW / f"xfoil_{tag}_{re_tag(args.re)}_polar.csv"
 
     with tempfile.TemporaryDirectory(prefix="xfoil_") as tmp:
         workdir = Path(tmp)
@@ -218,10 +228,7 @@ def main() -> int:
             if not src.exists():
                 log.warning("missing Cp file for α=%.2f (XFOIL likely failed to converge)", alpha)
                 continue
-            dest = REGIME_C_RAW / (
-                f"xfoil_{tag}_re{args.re:.0e}_aoa{alpha:+06.2f}.dat"
-                .replace("+0", "").replace(".", "p").replace("+", "p").replace("-", "m")
-            )
+            dest = REGIME_C_RAW / f"xfoil_{tag}_{re_tag(args.re)}_{alpha_tag(alpha)}.dat"
             cp = parse_xfoil_cp(src)
             with dest.open("w", encoding="utf-8") as fh:
                 fh.write(f"# XFOIL Cp distribution: {args.airfoil}\n")

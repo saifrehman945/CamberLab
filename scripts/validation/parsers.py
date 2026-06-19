@@ -267,6 +267,57 @@ def load_naca4412_cp(path: Path | str | None = None) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# XFOIL engineering-reference loaders (Regime C)
+# ---------------------------------------------------------------------------
+
+def load_xfoil_polar(path: Path | str) -> pd.DataFrame:
+    """Load an XFOIL polar CSV produced by generate_xfoil_reference.py.
+
+    The file already carries normalized column names
+    (alpha_deg, Cl, Cd, Cdp, Cm, x_trans_upper, x_trans_lower, ...), so this
+    is a thin wrapper that just guarantees float dtypes for the numeric
+    columns downstream code matches on.
+
+    Returns the DataFrame unchanged apart from a `source` tag.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"XFOIL polar file not found: {p}")
+    df = pd.read_csv(p)
+    for col in ("alpha_deg", "Cl", "Cd"):
+        if col in df.columns:
+            df[col] = df[col].astype(np.float64)
+    df["source"] = p.stem
+    return df
+
+
+def load_xfoil_cp(path: Path | str, label: str | None = None) -> pd.DataFrame:
+    """Load an XFOIL Cp distribution (.dat) written by generate_xfoil_reference.py.
+
+    The file has a few ``#`` comment lines and a Tecplot-style
+    ``variables="x/c","Cp"`` line, followed by two whitespace-separated
+    columns (x/c, Cp). Returns columns: x_c, Cp, source.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"XFOIL Cp file not found: {p}")
+    rows: list[list[float]] = []
+    for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or s.lower().startswith("variables"):
+            continue
+        tokens = s.split()
+        try:
+            x, cp = float(tokens[0]), float(tokens[1])
+        except (ValueError, IndexError):
+            continue
+        rows.append([x, cp])
+    df = pd.DataFrame(rows, columns=["x_c", "Cp"])
+    df["source"] = label or p.stem
+    return df
+
+
+# ---------------------------------------------------------------------------
 # OpenFOAM forceCoeffs loader (matches forms used by 04_run_cfd.py)
 # ---------------------------------------------------------------------------
 
