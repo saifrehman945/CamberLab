@@ -20,14 +20,25 @@ def cosine_x(n: int) -> np.ndarray:
     return 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, n)))
 
 
-def naca_thickness(x: np.ndarray, t: float) -> np.ndarray:
-    """NACA 4-digit half-thickness distribution (open-TE form)."""
+def naca_thickness(x: np.ndarray, t: float, closed_te: bool = False) -> np.ndarray:
+    """NACA 4-digit half-thickness distribution.
+
+    closed_te=False -> the classic open-TE coefficients (the x**4 term is
+                       -0.1015), which leave a small finite half-thickness
+                       (~0.0021*5t) at x=1.
+    closed_te=True  -> the standard closed-TE modification (x**4 coefficient
+                       -0.1036) so the thickness reaches exactly zero at x=1
+                       with a clean finite wedge angle — no closure kink. This
+                       is the sharp-TE form used by canonical NACA C-grid
+                       validations (e.g. NASA TMR NACA0012).
+    """
+    c4 = -0.1036 if closed_te else -0.1015
     return 5.0 * t * (
         0.2969 * np.sqrt(x)
         - 0.1260 * x
         - 0.3516 * x ** 2
         + 0.2843 * x ** 3
-        - 0.1015 * x ** 4
+        + c4 * x ** 4
     )
 
 
@@ -43,8 +54,11 @@ def naca_symmetric(
     thickness         : NACA 4-digit max half-thickness ratio (e.g. 0.12).
     n                 : Total surface points per side (LE -> TE inclusive).
     te_chord_fraction : Where to truncate the airfoil, in [chord] units.
-                        1.0  -> sharp closed TE (legacy behaviour: y forced to 0
-                                at the last point).
+                        1.0  -> sharp closed TE. The closed-TE thickness
+                                coefficient is used so the half-thickness
+                                reaches exactly zero at x=1 with a clean finite
+                                wedge angle (no closure kink / sliver cells).
+                                Meshed by the standard C-grid path in topology.
                         <1.0 -> blunt TE. The airfoil is sampled on
                                 x in [0, te_chord_fraction] and the natural
                                 NACA-4 half-thickness at te_chord_fraction is
@@ -63,10 +77,11 @@ def naca_symmetric(
         raise ValueError(
             f"te_chord_fraction must lie in (0.5, 1.0], got {te_chord_fraction}"
         )
+    sharp = te_chord_fraction >= 1.0 - 1e-12
     x = cosine_x(n) * te_chord_fraction
-    y_t = naca_thickness(x, thickness)
-    if te_chord_fraction >= 1.0 - 1e-12:
-        y_t[-1] = 0.0              # sharp closed TE (legacy)
+    y_t = naca_thickness(x, thickness, closed_te=sharp)
+    if sharp:
+        y_t[-1] = 0.0              # closed-TE coeff already ~0 here; pin exactly
     upper = np.column_stack((x,  y_t)).astype(np.float64)
     lower = np.column_stack((x, -y_t)).astype(np.float64)
     return upper, lower

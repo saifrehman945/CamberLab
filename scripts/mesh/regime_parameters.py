@@ -23,22 +23,20 @@ REGIME_MESH: dict[str, dict | None] = {
         # --- surface discretisation (raw airfoil sampling) ----------------
         "surface_points":           300,                # cosine-spaced per side
 
-        # --- blunt trailing edge ------------------------------------------
-        # The airfoil is truncated at x = te_chord_fraction * chord and the
-        # natural NACA-4 half-thickness at that x is kept as the TE half-
-        # thickness. This eliminates the quasi-sharp tip that produces sliver
-        # cells when a closed-TE NACA-4 is meshed structurally.
-        # te_blunt_pts is the number of nodes ACROSS the blunt back wall
-        # (TE_UP -> TE_MID -> TE_LO together), shared by the upper and lower
-        # halves equally. Accepts either:
-        #   "auto"  - use the maximum value the blunt-back geometry can fit
-        #             given h_nu_first (wall-normal first cell at TE_UP).
-        #             Best default: the count then varies per case, matching
-        #             whatever the (Re, t/c) combination physically supports.
-        #   int N>=3 - use N as a ceiling; the per-case adaptive solver may
-        #             still reduce N if h_nu_first * (N - 1) > h_te.
-        "te_chord_fraction":        0.99,
-        "te_blunt_pts":             "auto",
+        # --- trailing edge ------------------------------------------------
+        # te_chord_fraction == 1.0 selects a SHARP (closed) TE and the clean
+        # 6-block C-grid (topology._build_sharp_c_grid): the upper/lower
+        # splines meet at a single point, so there is no blunt base, no h_te
+        # step, and every wake column is exactly normal_pts tall (all hex).
+        # geometry.naca_symmetric uses the closed-TE thickness coefficient at
+        # 1.0 so the tip closes cleanly with a finite wedge angle (no sliver).
+        #
+        # te_chord_fraction < 1.0 instead truncates the airfoil to a blunt TE
+        # and uses the legacy 10-block topology, which carries te_blunt_pts in
+        # the wake transverse seam. te_blunt_pts is consumed ONLY in that blunt
+        # path and is ignored when te_chord_fraction == 1.0.
+        "te_chord_fraction":        1.0,
+        "te_blunt_pts":             "auto",   # blunt path only; ignored when sharp
 
         # --- transfinite point counts -------------------------------------
         "chord_pts_upper":          160,                # along upper airfoil (LE -> TE)
@@ -116,9 +114,9 @@ REGIME_MESH: dict[str, dict | None] = {
         # --- surface discretisation (raw airfoil sampling) ----------------
         "surface_points":           300,
 
-        # --- blunt trailing edge ------------------------------------------
-        "te_chord_fraction":        0.99,
-        "te_blunt_pts":             200,
+        # --- trailing edge (sharp; see Regime A) --------------------------
+        "te_chord_fraction":        1.0,
+        "te_blunt_pts":             200,      # blunt path only; ignored when sharp
 
         # --- transfinite point counts -------------------------------------
         # Suction-side resolution increased to capture adverse-pressure-
@@ -199,13 +197,14 @@ REGIME_MESH: dict[str, dict | None] = {
         # --- surface discretisation (raw airfoil sampling) ----------------
         "surface_points":           300,            # ample even for t=0.08
 
-        # --- blunt trailing edge ------------------------------------------
-        # "auto" (not B's explicit 60): C spans thin airfoils (t down to 0.08)
-        # at low Re, so the blunt-back half-thickness varies a lot per case.
-        # The adaptive solver must size te_blunt_pts to each geometry; a fixed
-        # int would be downgraded on nearly every thin/low-Re sample anyway.
-        "te_chord_fraction":        0.99,
-        "te_blunt_pts":             "auto",
+        # --- trailing edge (sharp; see Regime A) --------------------------
+        # NOTE: C spans thin airfoils (t down to 0.08) -> the sharp wedge angle
+        # is smallest here (~11deg included at t=0.08), so the TE corner cell is
+        # the worst-case for skew across the regimes. Watch checkMesh skewness
+        # on thin/low-Re C samples; soften le_te_cluster if it approaches the
+        # gate. te_blunt_pts is ignored when sharp.
+        "te_chord_fraction":        1.0,
+        "te_blunt_pts":             "auto",   # blunt path only; ignored when sharp
 
         # --- transfinite point counts -------------------------------------
         # Highest streamwise resolution of any regime. The laminar separation
@@ -281,9 +280,9 @@ REGIME_MESH: dict[str, dict | None] = {
         # --- surface discretisation (raw airfoil sampling) ----------------
         "surface_points":           300,
 
-        # --- blunt trailing edge ------------------------------------------
-        "te_chord_fraction":        0.99,
-        "te_blunt_pts":             "auto",          # attached, like A
+        # --- trailing edge (sharp; see Regime A) --------------------------
+        "te_chord_fraction":        1.0,
+        "te_blunt_pts":             "auto",   # blunt path only; ignored when sharp
 
         # --- transfinite point counts -------------------------------------
         # Leaner than A: mild alpha (0-6 deg), attached flow, 50k-150k target.

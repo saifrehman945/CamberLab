@@ -1,9 +1,24 @@
 """
-Structured C+H 10-block transfinite mesh for a NACA airfoil with a blunt
-trailing edge.
+Structured C+H transfinite mesh for a NACA airfoil.
 
-Topology
-========
+Two trailing-edge topologies, dispatched on ``te_chord_fraction``:
+
+  * ``te_chord_fraction == 1.0`` -> SHARP TE (``_build_sharp_c_grid``). The
+    upper/lower splines meet at a single TE point, so there is no blunt base,
+    no ``h_te`` step, and no inner/outer wake band. Every wake column is
+    exactly ``normal_pts`` tall, the mesh stays all-hex, and the wake cut is a
+    plain branch cut from the TE. This is the textbook airfoil C-grid and the
+    preferred path (see ``regime_parameters.py``).
+
+  * ``te_chord_fraction < 1.0`` -> BLUNT TE (``build_c_grid`` body, the
+    10-block topology documented below). Retained for cases that deliberately
+    want a finite-thickness base; it carries the blunt count in the wake
+    transverse seam, which the sharp path avoids entirely.
+
+The blunt 10-block topology is documented below.
+
+Blunt-TE topology
+=================
 
 Ten transfinite quad blocks. The airfoil is truncated at x = te_chord_fraction
 so the trailing edge has a finite half-thickness h_te (NACA-4 thickness
@@ -171,7 +186,392 @@ def _classify_lateral(gmsh_module, surface_tag: int,
 
 
 # ---------------------------------------------------------------------------
-# Main builder
+# Shared gmsh setup / finalisation (used by both TE topologies)
+# ---------------------------------------------------------------------------
+
+def _gmsh_setup(gmsh_module, model_name: str) -> None:
+    """Reset gmsh and apply the structured-quad meshing options shared by both
+    the sharp and blunt builders."""
+    gmsh_module.clear()
+    gmsh_module.model.add(model_name)
+    gmsh_module.option.setNumber("General.Terminal", 0)
+    # Geometry.Tolerance is the node-coincidence threshold used when the geo
+    # kernel removes duplicate points on synchronize. Its default (1e-8) is
+    # RELATIVE to the domain bounding box (~50c here), so a first cell below
+    # ~5e-7 m makes wall-adjacent nodes look coincident and gmsh collapses them
+    # into degenerate (triangular) quads -> gmshToFoam fails. Regime B/C resolve
+    # y+<1 with first cells ~3e-7, so drop the tolerance well below that.
+    gmsh_module.option.setNumber("Geometry.Tolerance", 1e-12)
+    gmsh_module.option.setNumber("Mesh.MshFileVersion", 2.2)
+    gmsh_module.option.setNumber("Mesh.SaveAll", 0)
+    gmsh_module.option.setNumber("Mesh.Algorithm", 8)               # Frontal-Delaunay-for-Quads (fallback)
+    gmsh_module.option.setNumber("Mesh.RecombinationAlgorithm", 1)  # Blossom
+    gmsh_module.option.setNumber("Mesh.RecombineAll", 1)
+    gmsh_module.option.setNumber("Mesh.ElementOrder", 1)
+    gmsh_module.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+    gmsh_module.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+    gmsh_module.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
+
+
+def _finalize_and_write(
+    gmsh_module, geo, source_surfaces: list[int], loop_sizes: list[int],
+    block_names: list[str], airfoil_curves: set[int], farfield_curves: set[int],
+    case_dir: Path, cfg: dict, chord: float, start_time: float,
+) -> tuple[int, float]:
+    """Spanwise-extrude the 2-D block surfaces, classify the lateral patches
+    into aerofoil / freestream / internal, tag physical groups, mesh, and write
+    ``mesh.msh``. Shared by the sharp and blunt builders.
+
+    Returns ``(cell_count, runtime_s)``.
+    """
+    extr = geo.extrude(
+        [(2, s) for s in source_surfaces],
+        0.0, 0.0, cfg["spanwise_thickness"] * chord,
+        numElements=[cfg["spanwise_layers"]],
+        heights=[1.0],
+        recombine=True,
+    )
+    geo.synchronize()
+
+    # ---- slice extrude result by per-block loop size --------------------
+    offsets = _block_offsets(loop_sizes)
+    per_block: dict[str, dict] = {}
+    for name, off, n in zip(block_names, offsets, loop_sizes):
+        block_entities = extr[off : off + 2 + n]
+        per_block[name] = {
+            "top":      block_entities[0][1],     # (2, tag) — back face at +z
+            "volume":   block_entities[1][1],     # (3, tag)
+            "laterals": [t for d, t in block_entities[2 : 2 + n] if d == 2],
+        }
+
+    # ---- classify laterals into aerofoil / freestream / internal seam ----
+    aerofoil_tags: set[int] = set()
+    freestream_tags: set[int] = set()
+    all_laterals: set[int] = set()
+    for b in per_block.values():
+        all_laterals.update(b["laterals"])
+    for s_tag in all_laterals:
+        kind = _classify_lateral(gmsh_module, s_tag, airfoil_curves, farfield_curves)
+        if kind == "aerofoil":
+            aerofoil_tags.add(s_tag)
+        elif kind == "freestream":
+            freestream_tags.add(s_tag)
+        # 'internal' seams (incl. the wake branch cut) get no physical group
+
+    if not aerofoil_tags:
+        raise RuntimeError("Failed to identify any aerofoil surfaces after extrusion")
+    if not freestream_tags:
+        raise RuntimeError("Failed to identify any freestream surfaces after extrusion")
+
+    front_back_tags = list(source_surfaces) + [b["top"] for b in per_block.values()]
+    volume_tags     = [b["volume"] for b in per_block.values()]
+
+    # ---- physical groups (named for gmshToFoam) -------------------------
+    g_front_back = gmsh_module.model.addPhysicalGroup(2, front_back_tags)
+    gmsh_module.model.setPhysicalName(2, g_front_back, "frontAndBack")
+    g_aerofoil   = gmsh_module.model.addPhysicalGroup(2, sorted(aerofoil_tags))
+    gmsh_module.model.setPhysicalName(2, g_aerofoil, "aerofoil")
+    g_freestream = gmsh_module.model.addPhysicalGroup(2, sorted(freestream_tags))
+    gmsh_module.model.setPhysicalName(2, g_freestream, "freestream")
+    g_fluid = gmsh_module.model.addPhysicalGroup(3, volume_tags)
+    gmsh_module.model.setPhysicalName(3, g_fluid, "fluid")
+
+    # ---- mesh -----------------------------------------------------------
+    gmsh_module.model.mesh.generate(3)
+    _, elem_tags, _ = gmsh_module.model.mesh.getElements(3)
+    cell_count = int(sum(len(t) for t in elem_tags))
+
+    gmsh_module.write(str(case_dir / "mesh.msh"))
+    runtime = time.perf_counter() - start_time
+    return cell_count, runtime
+
+
+# ---------------------------------------------------------------------------
+# Sharp-TE builder (preferred; te_chord_fraction == 1.0)
+# ---------------------------------------------------------------------------
+
+def _build_sharp_c_grid(
+    gmsh_module, case_dir: Path, params: dict, cfg: dict, chord: float,
+) -> dict[str, float]:
+    """Clean 6-block transfinite C-grid for a SHARP (closed) trailing edge.
+
+    The upper/lower airfoil splines meet at a single TE point, so there is no
+    blunt base and no h_te step: every wake column is exactly ``normal_pts``
+    tall and the mesh is all-hex. Blocks:
+
+        U, L          : around the airfoil (5-edge, north split arc+horizontal)
+        UTW, UMW      : upper wake — transition then main
+        LTW, LMW      : lower wake — transition then main
+
+    The wake centreline (TE -> T_MID -> OUT_MID) is an internal branch cut
+    shared by the upper and lower wake blocks. The wall-normal seam grading
+    (te_nu/te_nl) is reused on the wake transverse seams so the U/UTW and
+    UTW/UMW interfaces are conformal in count AND distribution (skew-free).
+    """
+    start_time = time.perf_counter()
+
+    # ---- physics-derived spacings ----------------------------------------
+    y_plus_mesh = cfg["y_plus_target"] * cfg.get("y_plus_mesh_factor", 1.0)
+    h1 = first_cell_height(params["Re"], y_plus_mesh, chord=chord)
+
+    # ---- farfield geometry (TE column anchored at x = chord) -------------
+    ff = farfield_points(
+        upstream_radius=cfg["upstream_radius"],
+        downstream_length=cfg["downstream_length"],
+        transverse_extent=cfg["transverse_extent"],
+        transition_wake_length=cfg["transition_wake_length"],
+        chord=chord,
+        te_chord_fraction=1.0,
+    )
+    Rc = cfg["upstream_radius"] * chord
+    Lw = cfg["downstream_length"] * chord
+    Lt = cfg["transition_wake_length"] * chord
+    Lm = Lw - Lt
+    Ht = cfg["transverse_extent"] * chord
+    te_x = chord
+
+    # ---- wall-normal progression (match h1 across the upstream radius) ---
+    n_normal_cells = cfg["normal_pts"] - 1
+    r_normal = solve_progression(h1=h1, total_length=Rc, n_cells=n_normal_cells)
+    hint_r = cfg["bl_growth_ratio"]
+    if abs(r_normal - hint_r) / hint_r > 0.15:
+        log.warning(
+            "%s: derived normal-direction progression %.4f deviates from regime hint %.4f "
+            "(h1=%.3e m, n=%d, L=%.2f m). Adjust normal_pts or y_plus_target.",
+            case_dir.name, r_normal, hint_r, h1, n_normal_cells, Rc,
+        )
+
+    r_wake_main = float(cfg["wake_progression"])
+
+    # ---- transition-wake progression: match the airfoil TE cell ----------
+    n_trans_cells = cfg["transition_wake_pts"] - 1
+    h_te_target = _bump_endpoint_spacing(
+        length=te_x, n_cells=cfg["chord_pts_upper"] - 1, beta=cfg["le_te_cluster"],
+    )
+    explicit_r_trans = cfg.get("transition_wake_progression")
+    if explicit_r_trans is None:
+        try:
+            r_wake_trans = solve_progression(
+                h1=h_te_target, total_length=Lt, n_cells=n_trans_cells,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{case_dir.name}: cannot solve transition wake progression "
+                f"(h_TE_target={h_te_target:.3e}, Lt={Lt:.3f}, n={n_trans_cells}). "
+                f"Adjust transition_wake_length or transition_wake_pts. "
+                f"Underlying error: {exc}"
+            ) from exc
+    else:
+        r_wake_trans = float(explicit_r_trans)
+
+    # ---- outer-band outlet progression (wake_centreline_h) ---------------
+    # The main wake grades its transverse first cell from h1 (transition
+    # interface, west) to wake_centreline_h (outlet, east); None -> r_normal
+    # (no far-wake coarsening). The transition block keeps r_normal on both
+    # transverse edges (skew-free). With no blunt base, the seam spans the full
+    # transverse height Ht.
+    h_seam_first = cfg.get("wake_centreline_h") or h1
+    if h_seam_first < h1:
+        log.warning(
+            "%s: wake_centreline_h (%.3e) is finer than the wall h1 (%.3e); "
+            "this defeats the AR/non-orthogonality decoupling.",
+            case_dir.name, h_seam_first, h1,
+        )
+    r_seam_outer = solve_progression(
+        h1=h_seam_first, total_length=Ht, n_cells=n_normal_cells
+    )
+
+    # ---- surface geometry (sharp closed TE) ------------------------------
+    upper, lower = naca_symmetric(
+        params["thickness"], n=cfg["surface_points"], te_chord_fraction=1.0
+    )
+
+    # ---- gmsh setup ------------------------------------------------------
+    _gmsh_setup(gmsh_module, case_dir.name)
+    geo = gmsh_module.model.geo
+
+    # ---- corner points (TE is a single shared point) --------------------
+    p_LE_AF   = geo.addPoint(0.0,  0.0, 0.0)
+    p_TE      = geo.addPoint(te_x, 0.0, 0.0)
+    p_LE_FAR  = geo.addPoint(*ff.LE_FAR,  0.0)
+    p_TOP_MID = geo.addPoint(*ff.TOP_MID, 0.0)
+    p_BOT_MID = geo.addPoint(*ff.BOT_MID, 0.0)
+    p_TOP_TE  = geo.addPoint(*ff.TOP_TE,  0.0)
+    p_BOT_TE  = geo.addPoint(*ff.BOT_TE,  0.0)
+    p_T_TOP   = geo.addPoint(*ff.T_TOP,   0.0)
+    p_T_BOT   = geo.addPoint(*ff.T_BOT,   0.0)
+    p_T_MID   = geo.addPoint(*ff.T_MID,   0.0)
+    p_TOP_OUT = geo.addPoint(*ff.TOP_OUT, 0.0)
+    p_BOT_OUT = geo.addPoint(*ff.BOT_OUT, 0.0)
+    p_OUT_MID = geo.addPoint(*ff.OUT_MID, 0.0)
+
+    # ---- airfoil splines (LE -> single sharp TE point) ------------------
+    up_inner = [geo.addPoint(float(x), float(y), 0.0) for x, y in upper[1:-1]]
+    lo_inner = [geo.addPoint(float(x), float(y), 0.0) for x, y in lower[1:-1]]
+    C_af_up = geo.addSpline([p_LE_AF, *up_inner, p_TE])
+    C_af_lo = geo.addSpline([p_LE_AF, *lo_inner, p_TE])
+
+    # ---- farfield curves -------------------------------------------------
+    C_arc_up    = geo.addCircleArc(p_LE_FAR, p_LE_AF, p_TOP_MID)
+    C_arc_lo    = geo.addCircleArc(p_LE_FAR, p_LE_AF, p_BOT_MID)
+    C_top_h     = geo.addLine(p_TOP_MID, p_TOP_TE)
+    C_bot_h     = geo.addLine(p_BOT_MID, p_BOT_TE)
+    C_top_trans = geo.addLine(p_TOP_TE, p_T_TOP)
+    C_top_main  = geo.addLine(p_T_TOP,  p_TOP_OUT)
+    C_bot_trans = geo.addLine(p_BOT_TE, p_T_BOT)
+    C_bot_main  = geo.addLine(p_T_BOT,  p_BOT_OUT)
+    C_out_up    = geo.addLine(p_OUT_MID, p_TOP_OUT)   # outlet, upper half
+    C_out_lo    = geo.addLine(p_OUT_MID, p_BOT_OUT)   # outlet, lower half
+
+    # ---- internal seams --------------------------------------------------
+    C_le_rad     = geo.addLine(p_LE_FAR, p_LE_AF)
+    C_te_nu      = geo.addLine(p_TE, p_TOP_TE)        # wall-normal seam above TE
+    C_te_nl      = geo.addLine(p_TE, p_BOT_TE)        # wall-normal seam below TE
+    C_wake_trans = geo.addLine(p_TE,    p_T_MID)      # wake cut, transition
+    C_wake_main  = geo.addLine(p_T_MID, p_OUT_MID)    # wake cut, main
+    C_vseam_t_up = geo.addLine(p_T_MID, p_T_TOP)      # transition->main, upper
+    C_vseam_t_lo = geo.addLine(p_T_MID, p_T_BOT)      # transition->main, lower
+
+    # ---- transfinite line counts ----------------------------------------
+    chord_pts = cfg["chord_pts_upper"]
+    if cfg["chord_pts_lower"] != chord_pts:
+        raise ValueError(
+            f"chord_pts_upper ({chord_pts}) must equal chord_pts_lower "
+            f"({cfg['chord_pts_lower']}) for symmetric NACA mesh."
+        )
+    n_arc, n_h = _split_north_counts(chord_pts, cfg["north_arc_to_horiz_ratio"])
+    normal_pts = cfg["normal_pts"]
+    wake_pts   = cfg["wake_pts"]
+    trans_pts  = cfg["transition_wake_pts"]
+    bump = float(cfg["le_te_cluster"])
+
+    # Airfoil — Bump clusters at both LE and TE.
+    geo.mesh.setTransfiniteCurve(C_af_up, chord_pts, "Bump", bump)
+    geo.mesh.setTransfiniteCurve(C_af_lo, chord_pts, "Bump", bump)
+
+    # North-edge segments — uniform.
+    geo.mesh.setTransfiniteCurve(C_arc_up, n_arc, "Progression", 1.0)
+    geo.mesh.setTransfiniteCurve(C_arc_lo, n_arc, "Progression", 1.0)
+    geo.mesh.setTransfiniteCurve(C_top_h,  n_h,   "Progression", 1.0)
+    geo.mesh.setTransfiniteCurve(C_bot_h,  n_h,   "Progression", 1.0)
+
+    # Wall-normal seams — small cell at the wall/TE (y=0) end.
+    #   C_le_rad : LE_FAR -> LE_AF   small at end   | -r_normal
+    #   C_te_nu  : TE     -> TOP_TE  small at start | +r_normal
+    #   C_te_nl  : TE     -> BOT_TE  small at start | +r_normal
+    geo.mesh.setTransfiniteCurve(C_le_rad, normal_pts, "Progression", -r_normal)
+    geo.mesh.setTransfiniteCurve(C_te_nu,  normal_pts, "Progression", +r_normal)
+    geo.mesh.setTransfiniteCurve(C_te_nl,  normal_pts, "Progression", +r_normal)
+
+    # Wake transverse seams — normal_pts, small cell at the wake centreline
+    # (y=0) end so the count AND distribution match te_nu/te_nl across the
+    # U/UTW and UTW/UMW interfaces. The main-wake outlet uses r_seam_outer
+    # (wake_centreline_h) to coarsen the far wake transversely.
+    #   C_vseam_t_up : T_MID   -> T_TOP    small at start (T_MID)   | +r_normal
+    #   C_vseam_t_lo : T_MID   -> T_BOT    small at start (T_MID)   | +r_normal
+    #   C_out_up     : OUT_MID -> TOP_OUT  small at start (OUT_MID) | +r_seam_outer
+    #   C_out_lo     : OUT_MID -> BOT_OUT  small at start (OUT_MID) | +r_seam_outer
+    geo.mesh.setTransfiniteCurve(C_vseam_t_up, normal_pts, "Progression", +r_normal)
+    geo.mesh.setTransfiniteCurve(C_vseam_t_lo, normal_pts, "Progression", +r_normal)
+    geo.mesh.setTransfiniteCurve(C_out_up,     normal_pts, "Progression", +r_seam_outer)
+    geo.mesh.setTransfiniteCurve(C_out_lo,     normal_pts, "Progression", +r_seam_outer)
+
+    # Transition wake (streamwise) — small cells at the TE end.
+    geo.mesh.setTransfiniteCurve(C_wake_trans, trans_pts, "Progression", +r_wake_trans)
+    geo.mesh.setTransfiniteCurve(C_top_trans,  trans_pts, "Progression", +r_wake_trans)
+    geo.mesh.setTransfiniteCurve(C_bot_trans,  trans_pts, "Progression", +r_wake_trans)
+
+    # Main wake (streamwise) — small cells at the transition->main interface.
+    geo.mesh.setTransfiniteCurve(C_wake_main, wake_pts, "Progression", +r_wake_main)
+    geo.mesh.setTransfiniteCurve(C_top_main,  wake_pts, "Progression", +r_wake_main)
+    geo.mesh.setTransfiniteCurve(C_bot_main,  wake_pts, "Progression", +r_wake_main)
+
+    # ---- block loops & surfaces (6 clean quads + 2 five-edge airfoil) ----
+    loop_U   = geo.addCurveLoop([+C_af_up,  +C_te_nu, -C_top_h, -C_arc_up, +C_le_rad])
+    loop_L   = geo.addCurveLoop([+C_arc_lo, +C_bot_h, -C_te_nl, -C_af_lo,  -C_le_rad])
+    loop_UTW = geo.addCurveLoop([+C_wake_trans, +C_vseam_t_up, -C_top_trans, -C_te_nu])
+    loop_UMW = geo.addCurveLoop([+C_wake_main,  +C_out_up,     -C_top_main,  -C_vseam_t_up])
+    loop_LTW = geo.addCurveLoop([+C_bot_trans,  -C_vseam_t_lo, -C_wake_trans, +C_te_nl])
+    loop_LMW = geo.addCurveLoop([+C_bot_main,   -C_out_lo,     -C_wake_main,  +C_vseam_t_lo])
+
+    S_U   = geo.addPlaneSurface([loop_U])
+    S_L   = geo.addPlaneSurface([loop_L])
+    S_UTW = geo.addPlaneSurface([loop_UTW])
+    S_UMW = geo.addPlaneSurface([loop_UMW])
+    S_LTW = geo.addPlaneSurface([loop_LTW])
+    S_LMW = geo.addPlaneSurface([loop_LMW])
+
+    source_surfaces = [S_U, S_L, S_UTW, S_UMW, S_LTW, S_LMW]
+    loop_sizes      = [5, 5, 4, 4, 4, 4]
+    block_names     = ["U", "L", "UTW", "UMW", "LTW", "LMW"]
+
+    # Transfinite-surface corners (CCW; matches each loop's corner order).
+    geo.mesh.setTransfiniteSurface(S_U,   "Left", [p_LE_AF,  p_TE,      p_TOP_TE,  p_LE_FAR])
+    geo.mesh.setTransfiniteSurface(S_L,   "Left", [p_LE_FAR, p_BOT_TE,  p_TE,      p_LE_AF])
+    geo.mesh.setTransfiniteSurface(S_UTW, "Left", [p_TE,     p_T_MID,   p_T_TOP,   p_TOP_TE])
+    geo.mesh.setTransfiniteSurface(S_UMW, "Left", [p_T_MID,  p_OUT_MID, p_TOP_OUT, p_T_TOP])
+    geo.mesh.setTransfiniteSurface(S_LTW, "Left", [p_BOT_TE, p_T_BOT,   p_T_MID,   p_TE])
+    geo.mesh.setTransfiniteSurface(S_LMW, "Left", [p_T_BOT,  p_BOT_OUT, p_OUT_MID, p_T_MID])
+
+    for s in source_surfaces:
+        geo.mesh.setRecombine(2, s)
+
+    # ---- spanwise extrusion + finalise ----------------------------------
+    airfoil_curves  = {C_af_up, C_af_lo}
+    farfield_curves = {
+        C_arc_up, C_arc_lo, C_top_h, C_bot_h,
+        C_top_trans, C_top_main, C_bot_trans, C_bot_main,
+        C_out_up, C_out_lo,
+    }
+    cell_count, runtime = _finalize_and_write(
+        gmsh_module, geo, source_surfaces, loop_sizes, block_names,
+        airfoil_curves, farfield_curves, case_dir, cfg, chord, start_time,
+    )
+
+    # ---- diagnostics -----------------------------------------------------
+    if abs(r_wake_trans - 1.0) < 1e-9:
+        h_trans_first = Lt / n_trans_cells
+    else:
+        h_trans_first = Lt * (r_wake_trans - 1.0) / (r_wake_trans ** n_trans_cells - 1.0)
+    if abs(r_wake_main - 1.0) < 1e-9:
+        h_main_first = Lm / (wake_pts - 1)
+    else:
+        h_main_first = Lm * (r_wake_main - 1.0) / (r_wake_main ** (wake_pts - 1) - 1.0)
+    h_trans_last = h_trans_first * (r_wake_trans ** (n_trans_cells - 1))
+
+    log.info(
+        "%s [sharp TE] cells=%d | wake column = normal_pts (%d) tall | "
+        "h_TE_target=%.3e trans_first=%.3e (ratio=%.2f) trans_last=%.3e "
+        "main_first=%.3e",
+        case_dir.name, cell_count, normal_pts,
+        h_te_target, h_trans_first, h_trans_first / max(h_te_target, 1e-30),
+        h_trans_last, h_main_first,
+    )
+
+    return {
+        "first_cell_height":           float(h1),
+        "normal_progression":          float(r_normal),
+        "seam_progression":            float(r_seam_outer),
+        "wake_progression":            float(r_wake_main),
+        "transition_wake_progression": float(r_wake_trans),
+        "h_te_airfoil_target":         float(h_te_target),
+        "h_trans_first":               float(h_trans_first),
+        "h_trans_last":                float(h_trans_last),
+        "h_main_first":                float(h_main_first),
+        "te_chord_fraction":           1.0,
+        "te_half_thickness":           0.0,
+        "te_blunt_progression":        None,
+        "n_arc_pts":                   int(n_arc),
+        "n_horiz_pts":                 int(n_h),
+        "n_seam_pts":                  int(normal_pts),
+        "n_blunt_inner_pts":           0,
+        "cell_count_gmsh":             int(cell_count),
+        "mesh_runtime_s":              float(runtime),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Blunt-TE builder (legacy; te_chord_fraction < 1.0)
 # ---------------------------------------------------------------------------
 
 def build_c_grid(
@@ -187,6 +587,13 @@ def build_c_grid(
     derived progression ratios, etc.).
     """
     import gmsh  # local import — keeps gmsh dep optional at module-import time
+
+    # Dispatch: a sharp (closed) TE uses the clean 6-block C-grid, where every
+    # wake column is exactly normal_pts tall and no blunt count enters the wake
+    # transverse seam. Only te_chord_fraction < 1.0 falls through to the blunt
+    # 10-block topology below.
+    if float(cfg["te_chord_fraction"]) >= 1.0 - 1e-12:
+        return _build_sharp_c_grid(gmsh, case_dir, params, cfg, chord)
 
     start_time = time.perf_counter()
 
@@ -374,27 +781,7 @@ def build_c_grid(
     )
 
     # ---- gmsh setup ------------------------------------------------------
-    gmsh.clear()
-    gmsh.model.add(case_dir.name)
-    gmsh.option.setNumber("General.Terminal", 0)
-    # Geometry.Tolerance is the node-coincidence threshold used when the geo
-    # kernel removes duplicate points on synchronize. Its default (1e-8) is
-    # RELATIVE to the domain bounding box (~50c here), so a first cell below
-    # ~5e-7 m makes wall-adjacent nodes look coincident and gmsh collapses them
-    # into degenerate (triangular) quads at the TE corner -> gmshToFoam fails.
-    # Regime B/C resolve y+<1 with first cells ~3e-7, so drop the tolerance well
-    # below that to keep legitimately-distinct near-wall nodes separate.
-    gmsh.option.setNumber("Geometry.Tolerance", 1e-12)
-    gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
-    gmsh.option.setNumber("Mesh.SaveAll", 0)
-    gmsh.option.setNumber("Mesh.Algorithm", 8)               # Frontal-Delaunay-for-Quads (fallback)
-    gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 1)  # Blossom
-    gmsh.option.setNumber("Mesh.RecombineAll", 1)
-    gmsh.option.setNumber("Mesh.ElementOrder", 1)
-    gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
-    gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
-
+    _gmsh_setup(gmsh, case_dir.name)
     geo = gmsh.model.geo
 
     # ---- corner points ---------------------------------------------------
@@ -611,32 +998,7 @@ def build_c_grid(
     for s in source_surfaces:
         geo.mesh.setRecombine(2, s)
 
-    # ---- spanwise extrusion ---------------------------------------------
-    extr = geo.extrude(
-        [(2, s) for s in source_surfaces],
-        0.0, 0.0, cfg["spanwise_thickness"] * chord,
-        numElements=[cfg["spanwise_layers"]],
-        heights=[1.0],
-        recombine=True,
-    )
-
-    geo.synchronize()
-
-    # ---- slice extrude result by per-block loop size --------------------
-    offsets = _block_offsets(loop_sizes)
-    block_names = ["U", "L",
-                   "UTW_in", "UTW_out", "UMW_in", "UMW_out",
-                   "LTW_in", "LTW_out", "LMW_in", "LMW_out"]
-    per_block: dict[str, dict] = {}
-    for name, off, n in zip(block_names, offsets, loop_sizes):
-        block_entities = extr[off : off + 2 + n]
-        per_block[name] = {
-            "top":      block_entities[0][1],     # (2, tag) — back face at +z
-            "volume":   block_entities[1][1],     # (3, tag)
-            "laterals": [t for d, t in block_entities[2 : 2 + n] if d == 2],
-        }
-
-    # ---- classify laterals into aerofoil / freestream / internal seam ----
+    # ---- spanwise extrusion + finalise ----------------------------------
     # The blunt-back edges (te_blunt_up/lo) are part of the AIRFOIL boundary,
     # so their extruded laterals must end up on the no-slip wall patch.
     airfoil_curves  = {C_af_up, C_af_lo, C_te_blunt_up, C_te_blunt_lo}
@@ -645,47 +1007,13 @@ def build_c_grid(
         C_top_trans, C_top_main, C_bot_trans, C_bot_main,
         C_out_up_in, C_out_up_out, C_out_lo_in, C_out_lo_out,
     }
-
-    aerofoil_tags: set[int] = set()
-    freestream_tags: set[int] = set()
-    all_laterals: set[int] = set()
-    for b in per_block.values():
-        all_laterals.update(b["laterals"])
-    for s_tag in all_laterals:
-        kind = _classify_lateral(gmsh, s_tag, airfoil_curves, farfield_curves)
-        if kind == "aerofoil":
-            aerofoil_tags.add(s_tag)
-        elif kind == "freestream":
-            freestream_tags.add(s_tag)
-        # 'internal' seams get no physical group
-
-    if not aerofoil_tags:
-        raise RuntimeError("Failed to identify any aerofoil surfaces after extrusion")
-    if not freestream_tags:
-        raise RuntimeError("Failed to identify any freestream surfaces after extrusion")
-
-    front_back_tags = list(source_surfaces) + [b["top"] for b in per_block.values()]
-    volume_tags     = [b["volume"] for b in per_block.values()]
-
-    # ---- physical groups (named for gmshToFoam) -------------------------
-    g_front_back = gmsh.model.addPhysicalGroup(2, front_back_tags)
-    gmsh.model.setPhysicalName(2, g_front_back, "frontAndBack")
-    g_aerofoil   = gmsh.model.addPhysicalGroup(2, sorted(aerofoil_tags))
-    gmsh.model.setPhysicalName(2, g_aerofoil, "aerofoil")
-    g_freestream = gmsh.model.addPhysicalGroup(2, sorted(freestream_tags))
-    gmsh.model.setPhysicalName(2, g_freestream, "freestream")
-    g_fluid = gmsh.model.addPhysicalGroup(3, volume_tags)
-    gmsh.model.setPhysicalName(3, g_fluid, "fluid")
-
-    # ---- mesh -----------------------------------------------------------
-    gmsh.model.mesh.generate(3)
-    _, elem_tags, _ = gmsh.model.mesh.getElements(3)
-    cell_count = int(sum(len(t) for t in elem_tags))
-
-    mesh_path = case_dir / "mesh.msh"
-    gmsh.write(str(mesh_path))
-
-    runtime = time.perf_counter() - start_time
+    block_names = ["U", "L",
+                   "UTW_in", "UTW_out", "UMW_in", "UMW_out",
+                   "LTW_in", "LTW_out", "LMW_in", "LMW_out"]
+    cell_count, runtime = _finalize_and_write(
+        gmsh, geo, source_surfaces, loop_sizes, block_names,
+        airfoil_curves, farfield_curves, case_dir, cfg, chord, start_time,
+    )
 
     # ---- diagnostics on cell-size handoff -------------------------------
     # Realised first-cell at TE in the transition block (from the analytic
