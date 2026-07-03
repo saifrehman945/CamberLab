@@ -56,9 +56,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--case-id",
-        type=int,
+        type=str,
         nargs="*",
-        help="Specific case IDs to process. Defaults to all cases with params.json.",
+        help=(
+            "Specific case IDs or ranges. "
+            "Examples: 1 3 5, 1-10, 1-5 8 10-12. "
+            "Defaults to all cases with params.json."
+        ),
     )
     parser.add_argument(
         "--run",
@@ -81,6 +85,52 @@ def parse_args() -> argparse.Namespace:
 def fmt(value: float) -> str:
     return f"{value:.10g}"
 
+def expand_case_ids(case_args: list[str] | None) -> list[int] | None:
+    """
+    Expand command-line case IDs.
+
+    Examples
+    --------
+    ["1", "3", "5"]
+        -> [1, 3, 5]
+
+    ["1-5"]
+        -> [1, 2, 3, 4, 5]
+
+    ["1-5", "8", "10-12"]
+        -> [1, 2, 3, 4, 5, 8, 10, 11, 12]
+    """
+    if not case_args:
+        return None
+
+    case_ids: set[int] = set()
+
+    for item in case_args:
+        if "-" in item:
+            try:
+                start_str, end_str = item.split("-", 1)
+                start = int(start_str)
+                end = int(end_str)
+            except ValueError as exc:
+                raise argparse.ArgumentTypeError(
+                    f"Invalid case range '{item}'. Expected format like '1-10'."
+                ) from exc
+
+            if start > end:
+                raise argparse.ArgumentTypeError(
+                    f"Invalid case range '{item}': start must be <= end."
+                )
+
+            case_ids.update(range(start, end + 1))
+        else:
+            try:
+                case_ids.add(int(item))
+            except ValueError as exc:
+                raise argparse.ArgumentTypeError(
+                    f"Invalid case ID '{item}'."
+                ) from exc
+
+    return sorted(case_ids)
 
 def collect_case_dirs(case_ids: list[int] | None) -> list[Path]:
     if case_ids:
@@ -262,7 +312,8 @@ def main() -> None:
     if not OPENFOAM_BASHRC.exists():
         raise FileNotFoundError(f"{OPENFOAM_BASHRC} not found")
 
-    case_dirs = collect_case_dirs(args.case_id)
+    case_ids = expand_case_ids(args.case_id)
+    case_dirs = collect_case_dirs(case_ids)
     if not case_dirs:
         log.warning("No case directories with params.json were found under %s", CASES_DIR)
         return
