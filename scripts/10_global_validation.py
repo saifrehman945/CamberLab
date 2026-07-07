@@ -153,8 +153,8 @@ def main() -> None:
     metrics_df.to_csv(metrics_path, index=False)
     log.info("Wrote %s (%d rows)", metrics_path, len(metrics_df))
 
-    if "A" in test_df["regime"].unique():
-        log.warning(CD_REGIME_A_CAVEAT)
+    # if "A" in test_df["regime"].unique():
+    #     log.warning(CD_REGIME_A_CAVEAT)
 
 
 if __name__ == "__main__":

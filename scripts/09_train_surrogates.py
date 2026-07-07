@@ -147,8 +147,6 @@ def main() -> None:
             "Regimes with no trained model yet (0 converged training rows): %s",
             absent_regimes,
         )
-    if "A" in trained_regimes:
-        log.warning(CD_REGIME_A_CAVEAT)
 
 
 if __name__ == "__main__":
