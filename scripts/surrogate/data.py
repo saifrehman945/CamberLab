@@ -23,6 +23,17 @@ REGIMES = ["A", "B", "C", "D"]
 DATASET_PATH = RESULTS_DIR / "dataset_clean.csv"
 SMALL_TEST_SLICE_WARN = 10
 
+# Regimes we deliberately include in the dataset/models even though their CFD
+# cases fail the strict convergence gate (CLAUDE.md §8). This is an explicit,
+# opt-in relaxation — the convergence gate stays fully strict for every other
+# regime. Rows contributed by an unvalidated regime carry validated=False in
+# dataset_clean.csv, the regime is flagged validated=False in regime_bounds.json,
+# and scripts.surrogate.inference emits a low-confidence WARNING (never a
+# rejection) when a query classifies into one. Regime C is included this way:
+# its cases converge only weakly (oscillating Cl, y+ undershoot) but the user
+# wants predictions with a warning rather than an out-of-distribution refusal.
+UNVALIDATED_REGIMES = frozenset({"C"})
+
 
 def load_dataset(path: Path = DATASET_PATH) -> pd.DataFrame:
     if not path.exists():

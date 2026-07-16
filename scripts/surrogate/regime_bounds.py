@@ -35,6 +35,14 @@ def compute_regime_bounds(train_df: pd.DataFrame) -> dict:
     for regime, group in train_df.groupby("regime"):
         entry = {dim: [float(group[dim].min()), float(group[dim].max())] for dim in _DIMS}
         entry["n_train"] = int(len(group))
+        # A regime is validated only if every training row it contributed passed
+        # the convergence gate. Regimes included via UNVALIDATED_REGIMES have
+        # validated=False rows and are therefore flagged validated=False here, so
+        # scripts.surrogate.inference can warn (not reject) on such queries.
+        if "validated" in group.columns:
+            entry["validated"] = bool(group["validated"].fillna(False).all())
+        else:
+            entry["validated"] = True
         bounds[regime] = entry
     return bounds
 

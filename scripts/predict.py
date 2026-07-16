@@ -30,6 +30,8 @@ from scripts.surrogate.inference import (  # noqa: E402
     OutOfDistributionError,
     predict,
     predict_all,
+    predict_all_blended,
+    predict_blended,
 )
 
 
@@ -46,15 +48,27 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    # Auto mode (no --regime) blends overlapping validated regimes so predictions
+    # are continuous across boundaries; pinning --regime uses that single model.
+    blended = args.regime is None
     try:
         if args.family == "all":
-            result = predict_all(args.alpha, args.re, args.thickness, regime=args.regime)
+            if blended:
+                out = predict_all_blended(args.alpha, args.re, args.thickness)
+                weights, result = out["weights"], out["predictions"]
+                print(f"regime blend: {'  '.join(f'{r}={w:.2f}' for r, w in sorted(weights.items()))}")
+            else:
+                result = predict_all(args.alpha, args.re, args.thickness, regime=args.regime)
             print(f"{'family':<8}{'Cl':>12}{'Cd':>12}")
             for family, targets in result.items():
                 print(f"{family:<8}{targets['Cl']:>12.5f}{targets['Cd']:>12.5f}")
         else:
-            cl = predict(args.alpha, args.re, args.thickness, family=args.family, target="Cl", regime=args.regime)
-            cd = predict(args.alpha, args.re, args.thickness, family=args.family, target="Cd", regime=args.regime)
+            if blended:
+                cl = predict_blended(args.alpha, args.re, args.thickness, family=args.family, target="Cl")
+                cd = predict_blended(args.alpha, args.re, args.thickness, family=args.family, target="Cd")
+            else:
+                cl = predict(args.alpha, args.re, args.thickness, family=args.family, target="Cl", regime=args.regime)
+                cd = predict(args.alpha, args.re, args.thickness, family=args.family, target="Cd", regime=args.regime)
             print(f"{args.family}: Cl={cl:.5f}  Cd={cd:.5f}")
     except OutOfDistributionError as exc:
         print(f"REJECTED (out of distribution): {exc}", file=sys.stderr)

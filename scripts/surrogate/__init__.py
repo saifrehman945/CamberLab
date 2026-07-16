@@ -17,7 +17,16 @@ from .data import (
     load_split_indices,
     split_dataset,
 )
-from .inference import OutOfDistributionError, predict, predict_all, validate_and_classify
+from .inference import (
+    OutOfDistributionError,
+    blend_weights,
+    predict,
+    predict_all,
+    predict_all_blended,
+    predict_blended,
+    resolve_weights,
+    validate_and_classify,
+)
 from .regime_bounds import compute_regime_bounds, load_regime_bounds, save_regime_bounds
 
 __all__ = [
@@ -33,5 +42,9 @@ __all__ = [
     "OutOfDistributionError",
     "predict",
     "predict_all",
+    "predict_blended",
+    "predict_all_blended",
+    "blend_weights",
+    "resolve_weights",
     "validate_and_classify",
 ]

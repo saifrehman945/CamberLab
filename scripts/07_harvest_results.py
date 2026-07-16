@@ -32,6 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.validation.parsers import load_force_coeffs, load_residual_history  # noqa: E402
+from scripts.surrogate.data import UNVALIDATED_REGIMES  # noqa: E402
 
 CASES_DIR = PROJECT_ROOT / "cases"
 RESULTS_DIR = PROJECT_ROOT / "results"
@@ -45,7 +46,7 @@ Y_PLUS = {"A": 30.0, "B": 0.5, "C": 0.5, "D": 50.0}
 DATASET_COLUMNS = [
     "case_id", "regime", "alpha_deg", "Re", "thickness",
     "Cl_mean", "Cl_std", "Cd_mean", "Cd_std", "L_over_D",
-    "y_plus_mean", "iterations", "runtime_s",
+    "y_plus_mean", "iterations", "runtime_s", "validated",
 ]
 
 _EXEC_TIME_RE = re.compile(r"ExecutionTime\s*=\s*([\d.eE+-]+)\s*s")
@@ -206,9 +207,21 @@ def harvest_case(case_dir: Path) -> dict | None:
 
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
-    if not converged:
+    # Normal path: only converged cases enter the dataset. Exception: a regime
+    # in UNVALIDATED_REGIMES is included despite failing the gate, provided we
+    # still parsed usable force coefficients, and is tagged validated=False so
+    # downstream code can warn on it (CLAUDE.md §8 gate stays strict elsewhere).
+    include_unvalidated = (
+        not converged and regime in UNVALIDATED_REGIMES and coeff_result is not None
+    )
+    if not converged and not include_unvalidated:
         log.info("%s: not converged (%s)", case_id, reason)
         return None
+    if include_unvalidated:
+        log.warning(
+            "%s: INCLUDED as UNVALIDATED regime-%s row despite failing gate (%s)",
+            case_id, regime, reason,
+        )
 
     return {
         "case_id": case_id,
@@ -224,6 +237,7 @@ def harvest_case(case_dir: Path) -> dict | None:
         "y_plus_mean": metadata["y_plus_mean"],
         "iterations": metadata["iterations"],
         "runtime_s": metadata["runtime_s"],
+        "validated": bool(converged),
     }
 
 
