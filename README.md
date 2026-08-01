@@ -1,8 +1,95 @@
 # NACASurrogate
 
-Regime-aware parametric surrogate model for NACA 4-digit aerofoils.
-Maps `(α, Re, thickness, regime_id) → (Cl, Cd)` using 175 OpenFOAM RANS runs as
-training data, with one physics-validated CFD template per flow regime.
+Flow-physics-aware parametric surrogate model for symmetric NACA 4-digit
+aerofoils. It maps:
+
+```text
+(angle of attack, Reynolds number, thickness, flow physics) -> (Cl, Cd)
+```
+
+using OpenFOAM RANS CFD data and one CFD setup per flow-physics range. The
+planned DOE contains 175 samples across attached turbulent, near-stall
+separated, transitional low-Reynolds-number, and high-Reynolds-number attached
+flow. The currently committed model artifacts are trained only on the curated
+harvested rows available in `results/dataset_clean.csv`; see
+[Current status](#current-status).
+
+---
+
+## Current status
+
+This repository is publishable as an in-progress CFD surrogate pipeline. The
+planned DOE is fully defined in `samples.csv`, but not every CFD regime has
+finished simulation and training data yet.
+
+Current committed curated dataset:
+
+| Flow physics | Dataset rows | Training status |
+|---|---:|---|
+| Attached turbulent flow | 75 | Trained and validated |
+| Near-stall separated flow | 0 | Not trained yet; app can show clearly marked extrapolation |
+| Transitional low-Reynolds-number flow | 8 | Trained but marked low-confidence/unvalidated |
+| High-Reynolds-number attached flow | 40 | Trained and validated |
+
+The persisted training envelope is stored in `models/regime_bounds.json`. When
+future CFD data for the near-stall separated range is harvested into
+`results/dataset_clean.csv` and the models are retrained, the app and inference
+layer detect that support automatically from the model bounds. No synthetic CFD
+rows are written for missing regimes.
+
+`cases/` is intentionally ignored and is not required by the Streamlit app. The
+app reads only curated artifacts (`models/`, `results/`, and metadata files),
+never raw OpenFOAM case directories.
+
+---
+
+## Streamlit app
+
+The interactive dashboard in `app.py` provides:
+
+- Flow-physics-aware classification using human-readable physics labels
+- Cl, Cd, L/D, and drag-polar plots
+- GP/RF/KRG uncertainty or spread where available
+- Explicit warnings for unvalidated and untrained/extrapolated regions
+- A symmetric NACA 00xx surrogate interface with camber preview marked
+  unsupported when nonzero camber is selected
+
+Run locally:
+
+```bash
+micromamba env create -f environment.yml
+micromamba run -n openfoam streamlit run app.py
+```
+
+The current trained surrogate supports symmetric NACA 4-digit aerofoils only.
+Cambered NACA geometry can be previewed in the UI, but nonzero camber is marked
+unsupported and predictions still use the symmetric model at the selected
+thickness.
+
+---
+
+## Installation
+
+The main Python/OpenFOAM workflow is designed for Linux with OpenFOAM 12 and
+micromamba.
+
+```bash
+micromamba env create -f environment.yml
+micromamba activate openfoam
+```
+
+OpenFOAM itself is expected to be installed system-wide:
+
+```bash
+source /opt/openfoam12/etc/bashrc
+```
+
+For command-line prediction against the persisted models:
+
+```bash
+micromamba run -n openfoam python scripts/predict.py \
+  --alpha 4.0 --re 2.0e6 --thickness 0.12
+```
 
 ---
 
@@ -15,10 +102,10 @@ different governing physics. Using one CFD recipe across all of them blends
 distinct error structures into a single dataset and degrades CFD reliability,
 validation quality, surrogate smoothness, and extrapolation behavior.
 
-This redesign partitions the design space into four flow regimes, each with its
-own validated CFD template (turbulence model, wall treatment, y+ target, mesh
-strategy). Samples are then merged into one ML-ready dataset, with `regime_id`
-encoded as an explicit input feature on the surrogate.
+This redesign partitions the design space into four flow-physics ranges, each
+with its own validated CFD template (turbulence model, wall treatment, y+
+target, mesh strategy). Samples are then merged into one ML-ready dataset, with
+the flow-physics class encoded as an explicit input feature on the surrogate.
 
 For the full design rationale see `README_complete.md`. For OpenFOAM and Python
 implementation rules see `CLAUDE.md`.
@@ -110,7 +197,8 @@ reported in addition to the global metrics.
 | Parallelism | GNU `parallel` |
 | Surrogates | `scikit-learn`, `smt` |
 | Sensitivity | `SALib` (Sobol) |
-| Plots | `matplotlib`, `seaborn` |
+| Plots | `matplotlib`, `seaborn`, `plotly` |
+| App | `streamlit` |
 
 ---
 
@@ -120,12 +208,13 @@ reported in addition to the global metrics.
 NACASurrogate/
 ├── README.md
 ├── README_complete.md
+├── LICENSE
 ├── CLAUDE.md
+├── app.py                    # Streamlit dashboard over persisted artifacts
 ├── environment.yml
 ├── samples.csv               # 175 × [case_id, alpha_deg, Re, thickness, regime]
 ├── train_idx.npy             # 140 training indices (stratified)
 ├── test_idx.npy              # 35 test indices (stratified)
-├── dataset_clean.csv         # harvested CFD results (regime-tagged)
 │
 ├── scripts/
 │   ├── 01_generate_doe.py        # per-regime LHS → merged samples.csv
@@ -139,7 +228,7 @@ NACASurrogate/
 │   ├── 09_train_surrogates.py    # GP / RF / MLP / KRG (global, regime-aware)
 │   └── 10_global_validation.py   # parity, Sobol, OOD, learning curves
 │
-├── templates/                    # regime-specific OpenFOAM templates (Jinja2)
+├── openfoam_template/            # regime-specific OpenFOAM templates
 │   ├── regime_A/
 │   │   ├── 0/{U.jinja, p, nut, nuTilda}
 │   │   ├── constant/momentumTransport
@@ -171,13 +260,14 @@ NACASurrogate/
 │       └── <OpenFOAM case>
 │
 ├── models/                       # joblib
-│   ├── scaler.joblib
+│   ├── preprocessor.joblib
 │   ├── gp_Cl.joblib  / gp_Cd.joblib
 │   ├── rf_Cl.joblib  / rf_Cd.joblib
 │   ├── mlp_Cl.joblib / mlp_Cd.joblib
 │   └── krg_Cl.joblib / krg_Cd.joblib
 │
 └── results/
+    ├── dataset_clean.csv         # curated harvested CFD rows
     ├── regime_validation/        # per-regime CFD validation reports
     ├── surrogate_metrics.csv     # global + per-regime metrics
     ├── parity_plots.png
@@ -225,7 +315,7 @@ written to `case_metadata.json`.
 ### Stage 5 — `05_prepare_case.py`
 **Inputs:** regime label, `(α, Re, t)`. **Outputs:** OpenFOAM case from regime template.
 
-Selects `templates/regime_{X}/` and renders Jinja2 placeholders. Template
+Selects `openfoam_template/regime_{X}/` and renders placeholders. Template
 variables include `UX, UY, UINF, LIFTDIR_X/Y, DRAGDIR_X/Y, NU, K0, OMEGA0,
 NUT0, NUTILDA0, KL0`. Each regime's template renders only the placeholders it
 needs (SA regimes do not render `K0/OMEGA0`; transition regime additionally
@@ -241,12 +331,12 @@ parallel -j 4 \
 ```
 
 ### Stage 7 — `07_harvest_results.py`
-**Inputs:** all cases. **Outputs:** `dataset_all.csv`, `dataset_clean.csv`.
+**Inputs:** all cases. **Outputs:** `results/dataset_clean.csv`.
 
 Parses `postProcessing/forceCoeffs/0/coefficient.dat` and `log.foamRun`.
 Convergence criteria are regime-aware (see `CLAUDE.md` §8). Final columns:
-`[case_id, alpha_deg, Re, thickness, regime, Cl, Cd, L_over_D, Cl_std, Cd_std,
-y_plus_achieved, cells, runtime_s, converged]`.
+`[case_id, regime, alpha_deg, Re, thickness, Cl_mean, Cl_std, Cd_mean, Cd_std,
+L_over_D, y_plus_mean, iterations, runtime_s, validated]`.
 
 ### Stage 8 — `08_validate_regimes.py`
 Per-regime CFD validation against canonical NACA0012 references:
@@ -265,7 +355,7 @@ to the dataset.
 ### Stage 9 — `09_train_surrogates.py`
 Trains GP / RF / MLP / KRG on the merged dataset with one-hot `regime_id`.
 Cross-validation is performed on the training set only (never on the test
-indices). All models and the scaler are saved via `joblib.dump`.
+indices). All models and the shared preprocessor are saved via `joblib.dump`.
 
 ### Stage 10 — `10_global_validation.py`
 Parity plots (4 models × 2 outputs, colored by regime), Sobol indices (SALib,
@@ -285,10 +375,10 @@ breakdown.
 | 5 | Generate full 175-case dataset | Phase 6 |
 | 6 | Train and validate the unified surrogate | — |
 
-Phase 1 (Regime A) is the active focus and must be locked before any other
-phase begins. A regime may be skipped from Phase 5 only if its template fails
-to validate; in that case the surrogate is trained on the remaining regimes
-and the failed regime is documented as a known gap.
+The current repository state is ahead of the original phase narrative for some
+flow ranges and incomplete for others. Treat `results/dataset_clean.csv`,
+`results/surrogate_metrics.csv`, and `models/regime_bounds.json` as the source
+of truth for what the persisted surrogate currently supports.
 
 ---
 
@@ -304,3 +394,20 @@ and the failed regime is documented as a known gap.
 - Models: `joblib.dump` / `joblib.load`
 - Logging: `logging` module, not `print()`
 - Seed: 42 everywhere
+
+---
+
+## Open-source notes
+
+- `cases/` is ignored because raw OpenFOAM meshes, logs, and time directories
+  are large and regenerable.
+- The committed model and result artifacts are the reproducibility kernel for
+  the current app and CLI predictions.
+- The Streamlit app must remain artifact-only and must not read raw
+  `cases/` directories.
+- Missing flow-physics ranges should be added by harvesting CFD into
+  `results/dataset_clean.csv` and retraining, not by fabricating rows.
+
+## License
+
+This project is released under the MIT License. See `LICENSE`.

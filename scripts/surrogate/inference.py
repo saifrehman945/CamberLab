@@ -114,6 +114,23 @@ def _predict_one(model, family: str, X_proc: np.ndarray) -> float:
     return float(model.predict(X_proc)[0])
 
 
+def _predict_one_with_std(model, family: str, X_proc: np.ndarray) -> tuple[float, float | None]:
+    """Return model mean plus an uncertainty proxy when the family exposes one."""
+    if family == "gp":
+        mean, std = model.predict(X_proc, return_std=True)
+        return float(mean[0]), float(std[0])
+    if family == "rf" and hasattr(model, "estimators_"):
+        preds = np.asarray([est.predict(X_proc)[0] for est in model.estimators_], dtype=float)
+        return float(preds.mean()), float(preds.std(ddof=1)) if len(preds) > 1 else 0.0
+    if family == "krg":
+        mean = float(model.predict_values(np.asarray(X_proc))[0, 0])
+        if hasattr(model, "predict_variances"):
+            var = float(model.predict_variances(np.asarray(X_proc))[0, 0])
+            return mean, float(np.sqrt(max(var, 0.0)))
+        return mean, None
+    return _predict_one(model, family, X_proc), None
+
+
 def _build_query(alpha_deg: float, Re: float, thickness: float, resolved: str) -> pd.DataFrame:
     return build_feature_frame(
         pd.DataFrame([{"alpha_deg": alpha_deg, "Re": Re, "thickness": thickness, "regime": resolved}])
@@ -305,3 +322,112 @@ def predict_all_blended(
                 for regime, w in weights.items()
             )
     return {"weights": weights, "predictions": predictions}
+
+
+def predict_with_uncertainty(
+    alpha_deg: float,
+    Re: float,
+    thickness: float,
+    family: str = "gp",
+    target: str = "Cl",
+    regime: str | None = None,
+    models_dir: Path = MODELS_DIR,
+) -> dict:
+    """Strict single-regime prediction with an uncertainty proxy.
+
+    Returns a dict with keys: value, std, regime, status. This keeps the legacy
+    `predict` API unchanged while giving UI callers enough metadata to label
+    low-confidence regimes.
+    """
+    if family not in FAMILIES:
+        raise ValueError(f"Unknown family {family!r}; must be one of {FAMILIES}")
+    if target not in TARGETS:
+        raise ValueError(f"Unknown target {target!r}; must be one of {TARGETS}")
+
+    bounds = load_regime_bounds(models_dir / "regime_bounds.json")
+    resolved = validate_and_classify(alpha_deg, Re, thickness, regime, bounds)
+
+    preproc = _load_joblib(str(models_dir / "preprocessor.joblib"))
+    model = _load_joblib(str(models_dir / f"{family}_{target}.joblib"))
+    X_proc = preproc.transform(_build_query(alpha_deg, Re, thickness, resolved))
+    value, std = _predict_one_with_std(model, family, X_proc)
+    status = "validated" if bounds[resolved].get("validated", True) else "unvalidated"
+    return {"value": value, "std": std, "regime": resolved, "status": status}
+
+
+def predict_blended_with_uncertainty(
+    alpha_deg: float,
+    Re: float,
+    thickness: float,
+    family: str = "gp",
+    target: str = "Cl",
+    models_dir: Path = MODELS_DIR,
+    weights: dict[str, float] | None = None,
+) -> dict:
+    """Auto-mode blended prediction with combined uncertainty proxy."""
+    if family not in FAMILIES:
+        raise ValueError(f"Unknown family {family!r}; must be one of {FAMILIES}")
+    if target not in TARGETS:
+        raise ValueError(f"Unknown target {target!r}; must be one of {TARGETS}")
+
+    bounds = load_regime_bounds(models_dir / "regime_bounds.json")
+    if weights is None:
+        weights = resolve_weights(alpha_deg, Re, thickness, bounds)
+
+    preproc = _load_joblib(str(models_dir / "preprocessor.joblib"))
+    model = _load_joblib(str(models_dir / f"{family}_{target}.joblib"))
+
+    means: dict[str, float] = {}
+    stds: dict[str, float | None] = {}
+    for resolved in weights:
+        X_proc = preproc.transform(_build_query(alpha_deg, Re, thickness, resolved))
+        means[resolved], stds[resolved] = _predict_one_with_std(model, family, X_proc)
+
+    value = sum(weights[r] * means[r] for r in weights)
+    if all(stds[r] is not None for r in weights):
+        second_moment = sum(weights[r] * (float(stds[r]) ** 2 + means[r] ** 2) for r in weights)
+        std = float(np.sqrt(max(second_moment - value ** 2, 0.0)))
+    else:
+        std = None
+
+    if len(weights) == 1:
+        resolved = next(iter(weights))
+        status = "validated" if bounds[resolved].get("validated", True) else "unvalidated"
+    else:
+        status = "blended"
+    return {"value": value, "std": std, "weights": weights, "status": status}
+
+
+def predict_untrained_regime_extrapolated(
+    alpha_deg: float,
+    Re: float,
+    thickness: float,
+    regime: str,
+    family: str = "gp",
+    target: str = "Cl",
+    models_dir: Path = MODELS_DIR,
+) -> dict:
+    """Evaluate the persisted global model with an untrained regime one-hot.
+
+    This is intentionally separate from strict inference. It exists for UI-only
+    exploratory curves while a regime has no CFD training rows yet; callers must
+    label the result as extrapolated.
+    """
+    if regime not in REGIMES:
+        raise OutOfDistributionError(f"Unknown regime label {regime!r}; must be one of {REGIMES}")
+    if family not in FAMILIES:
+        raise ValueError(f"Unknown family {family!r}; must be one of {FAMILIES}")
+    if target not in TARGETS:
+        raise ValueError(f"Unknown target {target!r}; must be one of {TARGETS}")
+
+    bounds = load_regime_bounds(models_dir / "regime_bounds.json")
+    if regime in bounds:
+        raise OutOfDistributionError(
+            f"Regime {regime} is trained; use strict prediction instead of app-only extrapolation."
+        )
+
+    preproc = _load_joblib(str(models_dir / "preprocessor.joblib"))
+    model = _load_joblib(str(models_dir / f"{family}_{target}.joblib"))
+    X_proc = preproc.transform(_build_query(alpha_deg, Re, thickness, regime))
+    value, std = _predict_one_with_std(model, family, X_proc)
+    return {"value": value, "std": std, "regime": regime, "status": "extrapolated"}
