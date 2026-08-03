@@ -483,7 +483,7 @@ with st.sidebar:
     camber_position = camber_position_tenths / 10.0 if camber_position_tenths else 0.0
     thickness = thickness_percent / 100.0
     re = st.number_input("Reynolds number", min_value=300_000.0, max_value=5_000_000.0, value=2_000_000.0, step=100_000.0, format="%.0f")
-    alpha_min, alpha_max = st.slider("AoA sweep (deg)", 0.0, 16.0, (0.0, 16.0), step=0.5)
+    alpha_min, alpha_max = st.slider("AoA sweep (deg)", 0.0, 16.0, (0.0, 8.0), step=0.5)
     n_points = st.slider("Sweep points", 21, 161, 61, step=10)
     family = st.selectbox("Model family", FAMILIES, index=FAMILIES.index("gp"))
     mode_options = {"Auto classification": None, **{FLOW_PHYSICS_LABELS[r]: r for r in REGIMES}}
