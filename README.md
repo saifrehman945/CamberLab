@@ -1,7 +1,7 @@
 <h1 align="center">CamberLab</h1>
 
 <p align="center">
-  <strong>A flow-physics-aware CFD surrogate for NACA 4-digit aerofoils — with an interactive Streamlit cockpit.</strong>
+  <strong>A flow-physics-aware CFD surrogate for NACA 4-digit aerofoils</strong>
 </p>
 
 <p align="center">
