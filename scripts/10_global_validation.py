@@ -8,7 +8,7 @@ Purpose: Evaluate the persisted surrogate models on the sacred test split
          plots. Never retrains — read-only with respect to models/.
 
 Usage:
-    micromamba run -n openfoam python scripts/10_global_validation.py
+    uv run python scripts/10_global_validation.py
 """
 
 from __future__ import annotations

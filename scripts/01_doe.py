@@ -15,7 +15,7 @@ drawn from) — not by `classify_regime()`, which is the inference-time
 classifier used when querying the surrogate at arbitrary points.
 
 Usage:
-    micromamba run -n openfoam python scripts/01_doe.py
+    uv run python scripts/01_doe.py
 """
 
 import logging

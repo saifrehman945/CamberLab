@@ -8,8 +8,8 @@ Purpose: Thin CLI over scripts.surrogate.inference — query the trained
          silently extrapolated.
 
 Usage:
-    micromamba run -n openfoam python scripts/predict.py --alpha 4.0 --re 2.1e6 --thickness 0.12
-    micromamba run -n openfoam python scripts/predict.py --alpha 20 --re 4e6 --thickness 0.12  # expect rejection
+    uv run python scripts/predict.py --alpha 4.0 --re 2.1e6 --thickness 0.12
+    uv run python scripts/predict.py --alpha 20 --re 4e6 --thickness 0.12  # expect rejection
 """
 
 from __future__ import annotations

@@ -6,9 +6,9 @@ Purpose: Render the reusable OpenFOAM base case into each design directory and
          optionally run the solver for cases that already contain a mesh.
 
 Usage:
-    micromamba run -n openfoam python scripts/04_run_cfd.py
-    micromamba run -n openfoam python scripts/04_run_cfd.py --case-id 0 1 2
-    micromamba run -n openfoam python scripts/04_run_cfd.py --run --jobs 4
+    uv run python scripts/04_run_cfd.py
+    uv run python scripts/04_run_cfd.py --case-id 0 1 2
+    uv run python scripts/04_run_cfd.py --run --jobs 4
 
 When --run is used with --jobs N > 1, each case is solved sequentially using
 N MPI ranks via decomposePar / mpirun / reconstructPar. The same N is written

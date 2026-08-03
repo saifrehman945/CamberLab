@@ -11,7 +11,7 @@ that the geometry resolution is consistent with the regime's downstream mesh
 strategy.
 
 Usage:
-    micromamba run -n openfoam python scripts/02_geometry.py
+    uv run python scripts/02_geometry.py
 """
 
 import json

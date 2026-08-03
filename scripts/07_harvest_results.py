@@ -12,7 +12,7 @@ rewriting each case's own case_metadata.json in place (its documented job
 per CLAUDE.md §12). No mesh, field, log, or postProcessing file is modified.
 
 Usage:
-    micromamba run -n openfoam python scripts/07_harvest_results.py
+    uv run python scripts/07_harvest_results.py
 """
 
 from __future__ import annotations

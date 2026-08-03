@@ -107,13 +107,13 @@ URLs above. The download date and SHA-256 of each file are recorded in the
 regime's `metadata.json` under `references[*].file_provenance`. To re-fetch:
 
 ```bash
-micromamba run -n openfoam python scripts/validation/fetch_reference_data.py
+uv run python scripts/validation/fetch_reference_data.py
 ```
 
 XFOIL-generated reference data for Regime C is reproducible via:
 
 ```bash
-micromamba run -n openfoam python scripts/validation/generate_xfoil_reference.py
+uv run python scripts/validation/generate_xfoil_reference.py
 ```
 
 This requires `xfoil` to be present on PATH (`apt install xfoil` on Debian/Ubuntu).

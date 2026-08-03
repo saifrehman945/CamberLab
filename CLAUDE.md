@@ -25,48 +25,52 @@ classification rule is in §11. The case metadata schema is in §12.
 
 ---
 
-## 2. Environment — Always Use Micromamba
+## 2. Environment — uv + `requirements.txt`
 
-**All Python commands and scripts must be run inside the `openfoam` micromamba
-environment. Never use system Python or pip outside this environment.**
+**All Python commands and scripts must be run inside the project virtual
+environment at `.venv/`. Never use system Python.**
+
+There is no conda/micromamba environment and no `environment.yml`: every
+dependency installs from PyPI. `.python-version` pins Python 3.11, which
+`uv venv` picks up automatically (uv downloads the interpreter if needed).
 
 ### Setup (first time)
 
 ```bash
-"${SHELL}" <(curl -L micro.mamba.pm/install.sh)
-micromamba env create -f environment.yml
-micromamba activate openfoam
-```
-
-### Daily use
-
-```bash
-micromamba activate openfoam
+curl -LsSf https://astral.sh/uv/install.sh | sh   # if uv is not installed
+uv venv                                           # creates .venv on Python 3.11
+uv pip install -r requirements.txt
 ```
 
 ### Running scripts
 
 ```bash
-micromamba run -n openfoam python scripts/01_generate_doe.py
+uv run python scripts/01_generate_doe.py
 # or
-micromamba activate openfoam
+source .venv/bin/activate
 python scripts/01_generate_doe.py
 ```
+
+`uv run` resolves `.venv` without activation — prefer it in automation, docs,
+and script docstrings.
 
 ### Adding a new dependency
 
 ```bash
-micromamba install -n openfoam <package>            # for conda-forge packages
-micromamba run -n openfoam pip install <package>    # for pip-only packages
-# Then update environment.yml manually
+uv pip install <package>
+# Then add the pinned-enough requirement to requirements.txt manually
 ```
+
+The dependency must be installable from PyPI. If a package only exists on
+conda-forge, do not reintroduce conda — find a PyPI equivalent or vendor the
+functionality.
 
 ### Never do
 
 ```bash
-pip install ...          # outside the environment
+pip install ...          # outside .venv (bare/system pip)
 python ...               # using system Python
-conda activate ...       # use micromamba, not conda
+conda activate ...       # no conda/micromamba in this project
 ```
 
 ---
@@ -78,8 +82,8 @@ conda activate ...       # use micromamba, not conda
 Do not use OpenFOAM ESI (openfoam.com) syntax — the two forks have diverged.
 Foundation release is at [openfoam.org](https://openfoam.org).
 
-OpenFOAM is installed system-level (not inside micromamba). Source it before
-any foam commands:
+OpenFOAM is installed system-level (not a Python package, not in `.venv`).
+Source it before any foam commands:
 
 ```bash
 source /opt/openfoam12/etc/bashrc
@@ -411,7 +415,7 @@ Stage:  <stage number and name>
 Purpose: <one sentence>
 
 Usage:
-    micromamba run -n openfoam python scripts/<filename>
+    uv run python scripts/<filename>
 """
 ```
 
@@ -474,7 +478,7 @@ if result.returncode != 0:
 
 ### gmsh version
 
-Always use gmsh via the Python API (installed in the micromamba environment):
+Always use gmsh via the Python API (installed from PyPI into `.venv`):
 
 ```python
 import gmsh
@@ -882,7 +886,7 @@ the dataset, and proceed to the surrogate stage on the remaining regimes.
 | Use `turbulenceProperties` | Use `constant/momentumTransport` (OpenFOAM 12) |
 | Use one template for multiple regimes | Each regime has its own template directory |
 | Rotate the mesh for AoA | Rotate the inlet velocity vector |
-| Use system Python | `micromamba activate openfoam` first |
+| Use system Python | `uv run python ...` (or activate `.venv`) |
 | Use `os.path` | `pathlib.Path` |
 | Use `print()` for logging | `logging.info()` / `logging.warning()` |
 | Use `fit_transform` on test data | `transform` only on test data |
@@ -914,6 +918,7 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Environment
+.venv/
 .env
 
 # OS
@@ -925,8 +930,9 @@ __pycache__/
 ## 16. Quick Reference — Key Commands
 
 ```bash
-# Activate environment
-micromamba activate openfoam
+# Set up / activate the environment
+uv venv && uv pip install -r requirements.txt
+source .venv/bin/activate      # or prefix commands with `uv run`
 
 # Source OpenFOAM 12
 source /opt/openfoam12/etc/bashrc

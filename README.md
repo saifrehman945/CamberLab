@@ -7,6 +7,7 @@
 <p align="center">
   <a href="#license"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776ab.svg">
+  <img alt="Managed with uv" src="https://img.shields.io/badge/env-uv-de5fe9.svg">
   <img alt="OpenFOAM 12" src="https://img.shields.io/badge/OpenFOAM-12-orange.svg">
   <img alt="Streamlit" src="https://img.shields.io/badge/app-Streamlit-ff4b4b.svg">
   <img alt="Status: research preview" src="https://img.shields.io/badge/status-research%20preview-yellow.svg">
@@ -69,20 +70,22 @@ committed.
 git clone https://github.com/saifrehman945/CamberLab.git
 cd CamberLab
 
-micromamba env create -f environment.yml
-micromamba run -n openfoam streamlit run app.py
+uv venv                              # .venv on Python 3.11 (see .python-version)
+uv pip install -r requirements.txt
+uv run streamlit run app.py
 ```
 
 The dashboard opens at <http://localhost:8501>.
 
-> Prefer conda/mamba? `conda env create -f environment.yml` works too. The
-> environment is named `openfoam` because the same environment drives the CFD
-> pipeline; OpenFOAM itself is *not* installed by it.
+> No uv? Any pip works — `python3.11 -m venv .venv && .venv/bin/pip install -r
+> requirements.txt`. Every dependency comes from PyPI; there is no conda channel
+> and no `environment.yml`. OpenFOAM itself is *not* a Python package and is
+> installed separately (only needed to regenerate the dataset).
 
 ### Predict from the command line
 
 ```bash
-micromamba run -n openfoam python scripts/predict.py \
+uv run python scripts/predict.py \
   --alpha 4.0 --re 2.0e6 --thickness 0.12 --family gp
 # gp: Cl=0.43103  Cd=0.01225
 ```
@@ -99,8 +102,8 @@ Regenerating the dataset additionally needs a system-level
 
 ```bash
 source /opt/openfoam12/etc/bashrc
+source .venv/bin/activate              # or prefix each command with `uv run`
 
-micromamba activate openfoam
 python scripts/01_doe.py               # 175-point per-regime LHS → samples.csv
 python scripts/02_geometry.py          # analytic NACA 4-digit coordinates
 python scripts/03_mesh.py              # gmsh structured C+H mesh per regime
@@ -154,8 +157,10 @@ Known limitations, stated plainly:
 - **The committed Kriging artifacts do not load under SMT ≥ 2.13** — unpickling
   raises `AttributeError: 'PowExp' object has no attribute 'theta'`. This also
   breaks `predict.py --family all` (the CLI default), so pass an explicit
-  `--family gp|rf|mlp` until the models are retrained against a pinned SMT
-  version. `environment.yml` currently pins only `smt>=2.3.0`.
+  `--family gp|rf|mlp` until the models are retrained. No installable SMT
+  release loads them: 2.3–2.12 fail earlier still on moved modules and renamed
+  enums, so `requirements.txt` leaves `smt>=2.3.0` unpinned and retraining is
+  the only fix.
 - Missing ranges should be filled by harvesting real CFD into
   `results/dataset_clean.csv` and retraining — never by fabricating rows.
 
@@ -239,7 +244,8 @@ land in `validation/`.
 ```text
 CamberLab/
 ├── app.py                      # Streamlit dashboard (artifact-only)
-├── environment.yml             # micromamba/conda environment
+├── requirements.txt            # pip/uv dependencies (pure PyPI)
+├── .python-version             # 3.11 — picked up by `uv venv`
 ├── samples.csv                 # 175 × [case_id, alpha_deg, Re, thickness, regime]
 ├── train_idx.npy, test_idx.npy # frozen stratified split
 │
@@ -288,7 +294,9 @@ Issues and pull requests are welcome. Before opening a PR, please read
 [`CLAUDE.md`](CLAUDE.md) — it is the development guide for this repo and covers
 the non-obvious constraints. The essentials:
 
-- Work inside the `openfoam` micromamba environment; never system Python or bare `pip`.
+- Work inside the project virtual environment (`uv venv` + `uv pip install -r
+  requirements.txt`); never system Python. New dependencies go in
+  `requirements.txt` and must be installable from PyPI.
 - Never guess OpenFOAM dictionary syntax. Verify against `$FOAM_TUTORIALS`,
   `foamInfo <keyword>`, and `foamSearch`. OpenFOAM 12 uses
   `constant/momentumTransport`, not `turbulenceProperties`.

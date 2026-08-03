@@ -14,8 +14,8 @@ Outputs (written under validation_data/regime_C/raw/):
     xfoil_naca0012_re5e5_aoa{0,4,6}.dat              ← x/c, Cp per alpha
 
 Usage:
-    micromamba run -n openfoam python scripts/validation/generate_xfoil_reference.py
-    micromamba run -n openfoam python scripts/validation/generate_xfoil_reference.py --re 8e5 --alpha 0 2 4 6 8
+    uv run python scripts/validation/generate_xfoil_reference.py
+    uv run python scripts/validation/generate_xfoil_reference.py --re 8e5 --alpha 0 2 4 6 8
 """
 
 from __future__ import annotations

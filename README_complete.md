@@ -325,7 +325,7 @@ an empty C test set under bad luck and prevent per-regime error reporting.
 | Surrogates | `scikit-learn`, `smt` |
 | Sensitivity | `SALib` |
 | Plots | `matplotlib`, `seaborn` |
-| Environment | `micromamba` |
+| Environment | `uv` + `requirements.txt` (PyPI only) |
 
 ---
 
@@ -699,7 +699,8 @@ CamberLab/
 ├── README.md                     ← quick design summary
 ├── README_complete.md            ← this file
 ├── CLAUDE.md                     ← LLM operating manual
-├── environment.yml
+├── requirements.txt              ← pip/uv dependencies (pure PyPI)
+├── .python-version               ← 3.11, consumed by `uv venv`
 ├── samples.csv                   ← 175 × [case_id, alpha_deg, Re, thickness, regime]
 ├── train_idx.npy                 ← 140 stratified training indices
 ├── test_idx.npy                  ← 35 stratified test indices

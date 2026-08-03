@@ -3,7 +3,8 @@
 #
 # Strategy: track the reproducibility kernel only.
 #   Tracked  → scripts/, openfoam_template/, samples.csv, train/test_idx.npy,
-#              validation/, environment.yml, README*.md, CLAUDE.md,
+#              validation/, requirements.txt, .python-version,
+#              README*.md, CLAUDE.md,
 #              (future) results/summary.csv, models/*.joblib
 #   Ignored  → cases/  (1.9 GB of meshes, fields, logs — regenerable from
 #              the tracked inputs above via scripts/02..04).

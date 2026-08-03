@@ -7,8 +7,8 @@ Purpose: Re-download every NASA TMR reference file referenced by the regime
          hashes for provenance.
 
 Usage:
-    micromamba run -n openfoam python scripts/validation/fetch_reference_data.py
-    micromamba run -n openfoam python scripts/validation/fetch_reference_data.py --check  # verify only
+    uv run python scripts/validation/fetch_reference_data.py
+    uv run python scripts/validation/fetch_reference_data.py --check  # verify only
 """
 
 from __future__ import annotations

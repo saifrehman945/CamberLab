@@ -11,10 +11,10 @@ Only Regime A is implemented in this overhaul; cases tagged with a different
 regime are skipped with a warning.
 
 Usage:
-    micromamba run -n openfoam python scripts/03_mesh.py
-    micromamba run -n openfoam python scripts/03_mesh.py --case-id 0 1 2
-    micromamba run -n openfoam python scripts/03_mesh.py --force
-    micromamba run -n openfoam python scripts/03_mesh.py --regime A
+    uv run python scripts/03_mesh.py
+    uv run python scripts/03_mesh.py --case-id 0 1 2
+    uv run python scripts/03_mesh.py --force
+    uv run python scripts/03_mesh.py --regime A
 """
 
 from __future__ import annotations
@@ -138,8 +138,8 @@ def parse_args() -> argparse.Namespace:
 def require_gmsh():
     if gmsh is None:
         raise ModuleNotFoundError(
-            "The gmsh Python API is not available. Activate the 'openfoam' "
-            "micromamba environment first."
+            "The gmsh Python API is not available. Install the project "
+            "environment first: uv venv && uv pip install -r requirements.txt"
         )
     return gmsh
 

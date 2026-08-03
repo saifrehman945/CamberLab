@@ -20,20 +20,20 @@ This is *model-setup* validation, not per-CFD-run quality control:
 Usage
 -----
     # Stage + compare (Regime A). Solver must already have run, or pass --run.
-    micromamba run -n openfoam python scripts/08_validation.py --regime A
+    uv run python scripts/08_validation.py --regime A
 
     # Stage + run + compare (single case at a time, decomposed across 4 cores)
-    micromamba run -n openfoam python scripts/08_validation.py --regime A --run
+    uv run python scripts/08_validation.py --regime A --run
 
     # Regenerate geometry + mesh only — no CFD, no reference comparison.
     # Emits validation/mesh_quality.csv with cells / non-ortho / skewness / y+ target.
-    micromamba run -n openfoam python scripts/08_validation.py --regime A --mesh-only --force
+    uv run python scripts/08_validation.py --regime A --mesh-only --force
 
     # Several regimes at once, each case solved on 8 cores via MPI decomposition
-    micromamba run -n openfoam python scripts/08_validation.py --regime A B --run --jobs 8
+    uv run python scripts/08_validation.py --regime A B --run --jobs 8
 
     # Re-plot / re-summarize from existing cases (no staging, no run)
-    micromamba run -n openfoam python scripts/08_validation.py --regime A --no-stage
+    uv run python scripts/08_validation.py --regime A --no-stage
 """
 
 from __future__ import annotations

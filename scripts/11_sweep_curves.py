@@ -25,9 +25,9 @@ Two modes:
     console. Unvalidated regimes (C) never blend — they keep the single-model path.
 
 Usage:
-    micromamba run -n openfoam python scripts/11_sweep_curves.py \
+    uv run python scripts/11_sweep_curves.py \
         --re 2.1e6 --thickness 0.12 --regime A
-    micromamba run -n openfoam python scripts/11_sweep_curves.py \
+    uv run python scripts/11_sweep_curves.py \
         --re 5e5 --thickness 0.12 --regime C --family gp
 """
 

@@ -23,7 +23,7 @@ validation/
 The single end-to-end command is:
 
 ```bash
-micromamba activate openfoam
+source .venv/bin/activate      # or prefix commands with `uv run`
 # Stage cases, run CFD, parse, plot, and write report:
 python scripts/08_validate_regimes.py --regime A --run --jobs 4
 

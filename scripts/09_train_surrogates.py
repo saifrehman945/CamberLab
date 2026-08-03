@@ -12,7 +12,7 @@ script after more regimes converge (via 07_harvest_results.py) requires no
 code changes.
 
 Usage:
-    micromamba run -n openfoam python scripts/09_train_surrogates.py
+    uv run python scripts/09_train_surrogates.py
 """
 
 from __future__ import annotations

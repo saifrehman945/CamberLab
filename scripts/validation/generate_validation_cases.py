@@ -14,9 +14,9 @@ This script does NOT run foamRun — it only stages the cases. Run them with:
 or via 08_validate_regimes.py which orchestrates both stages.
 
 Usage:
-    micromamba run -n openfoam python scripts/validation/generate_validation_cases.py --regime A
-    micromamba run -n openfoam python scripts/validation/generate_validation_cases.py --regime A B
-    micromamba run -n openfoam python scripts/validation/generate_validation_cases.py --regime A --force
+    uv run python scripts/validation/generate_validation_cases.py --regime A
+    uv run python scripts/validation/generate_validation_cases.py --regime A B
+    uv run python scripts/validation/generate_validation_cases.py --regime A --force
 """
 
 from __future__ import annotations

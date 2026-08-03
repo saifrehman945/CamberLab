@@ -1,0 +1,44 @@
+# =========================================================================
+# CamberLab — Python dependencies (pip / uv)
+#
+#   uv venv --python 3.11
+#   uv pip install -r requirements.txt
+#
+# =========================================================================
+
+# --- Design of experiments ----------------------------------------------
+pyDOE2>=1.3.0
+
+# --- Meshing (gmsh Python API, ships the compiled SDK on PyPI) ----------
+gmsh>=4.11.0
+
+# --- Data handling -------------------------------------------------------
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.11.0
+
+# --- Surrogate models ----------------------------------------------------
+# Pinned to the minor release the committed models/*.joblib were pickled with;
+# anything else triggers sklearn's InconsistentVersionWarning on load.
+# Bump only together with a retrain (scripts/09_train_surrogates.py).
+scikit-learn==1.8.*
+# NOTE: the committed models/krg_*.joblib artifacts do not unpickle under any
+# currently installable SMT (tested 2.3 - 2.12 and >= 2.13; each fails with a
+# different moved-module / renamed-enum error). Use --family gp|rf|mlp until
+# the Kriging models are retrained; see README.md → Project status.
+smt>=2.3.0
+
+# --- Sensitivity analysis ------------------------------------------------
+SALib>=1.4.7
+
+# --- Visualization / app -------------------------------------------------
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.18.0
+streamlit>=1.31.0
+
+# --- Utilities -----------------------------------------------------------
+joblib>=1.3.0
+tqdm>=4.65.0
+jinja2>=3.1.0
+
