@@ -1,4 +1,4 @@
-# NACASurrogate — Regime-Aware CFD Surrogate Modeling for NACA Aerofoils
+# CamberLab — Regime-Aware CFD Surrogate Modeling for NACA Aerofoils
 
 ## Author
 **Saif ur Rehman** — CFD Researcher | Physics-AI & Design Optimization
@@ -102,7 +102,7 @@ temporal evolution of a single fixed case.
 
 ## 4. Why Regime-Aware? — Motivation for the Redesign
 
-The original NACASurrogate (commit `5150a91`) used a single CFD recipe across
+The original CamberLab (commit `5150a91`) used a single CFD recipe across
 the entire aerodynamic design space:
 
 - one turbulence model (`kOmegaSST`)
@@ -695,7 +695,7 @@ These are the failure modes the project is set up to encounter and document:
 ## 18. Directory Structure
 
 ```
-NACASurrogate/
+CamberLab/
 ├── README.md                     ← quick design summary
 ├── README_complete.md            ← this file
 ├── CLAUDE.md                     ← LLM operating manual

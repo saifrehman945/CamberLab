@@ -1,7 +1,7 @@
 # OpenFOAM Template — Regime A (Attached Turbulent)
 
 This directory is the OpenFOAM 12 master case for **Regime A** of the
-NACASurrogate pipeline. Cases are produced by copying this directory into
+CamberLab pipeline. Cases are produced by copying this directory into
 `cases/case_XXXX/` and rendering the Jinja-suffixed files with each sample's
 flow conditions (`scripts/04_run_cfd.py`).
 

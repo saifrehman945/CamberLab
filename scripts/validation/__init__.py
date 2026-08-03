@@ -1,4 +1,4 @@
-"""Regime-aware CFD validation utilities for NACASurrogate.
+"""Regime-aware CFD validation utilities for CamberLab.
 
 Submodules:
     parsers                — load NASA TMR / Abbott / Ladson / Coles & Wadcock data

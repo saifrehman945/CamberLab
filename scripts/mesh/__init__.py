@@ -1,5 +1,5 @@
 """
-scripts.mesh — regime-aware structured C-grid meshing for NACASurrogate.
+scripts.mesh — regime-aware structured C-grid meshing for CamberLab.
 
 Modules
 -------

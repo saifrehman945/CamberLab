@@ -1,6 +1,6 @@
-# CLAUDE.md — Development Guide for NACASurrogate (Regime-Aware Redesign)
+# CLAUDE.md — Development Guide for CamberLab (Regime-Aware Redesign)
 
-This file tells Claude (or any LLM) how to work on the NACASurrogate project
+This file tells Claude (or any LLM) how to work on the CamberLab project
 correctly. Read this entire file before writing any code, editing any OpenFOAM
 dictionary, or suggesting any shell commands.
 
@@ -8,7 +8,7 @@ dictionary, or suggesting any shell commands.
 
 ## 1. Project Summary
 
-NACASurrogate is a **regime-aware** parametric surrogate modeling pipeline for
+CamberLab is a **regime-aware** parametric surrogate modeling pipeline for
 NACA 4-digit aerofoils. The aerodynamic design space is partitioned into four
 flow regimes, each with its own validated CFD template (turbulence model, wall
 treatment, y+ target, mesh strategy). Samples from all regimes are then merged

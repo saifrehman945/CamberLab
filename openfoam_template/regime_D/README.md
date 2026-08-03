@@ -1,6 +1,6 @@
 # OpenFOAM Template — Regime D (Fully Turbulent High-Re Attached)
 
-OpenFOAM 12 master case for **Regime D** of the NACASurrogate pipeline.
+OpenFOAM 12 master case for **Regime D** of the CamberLab pipeline.
 Cases are produced by copying this directory into `cases/case_XXXX/` and
 rendering the Jinja-suffixed files with each sample's flow conditions
 (`scripts/04_run_cfd.py`).

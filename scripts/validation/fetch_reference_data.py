@@ -56,11 +56,11 @@ DOWNLOADS: dict[str, str] = {
     "regime_B/raw/exp.profiles.new.dat":   f"{TMR_NACA4412_BASE}/exp.profiles.new.dat",
 }
 
-USER_AGENT = "NACASurrogate-validation-fetcher/1.0"
+USER_AGENT = "CamberLab-validation-fetcher/1.0"
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Download NASA TMR reference data for NACASurrogate validation.")
+    p = argparse.ArgumentParser(description="Download NASA TMR reference data for CamberLab validation.")
     p.add_argument("--check", action="store_true",
                    help="Do not download; only verify presence and recompute hashes.")
     p.add_argument("--force", action="store_true",

@@ -1,6 +1,6 @@
 # OpenFOAM Template — Regime C (Transitional Low-Re)
 
-OpenFOAM 12 master case for **Regime C** of the NACASurrogate pipeline.
+OpenFOAM 12 master case for **Regime C** of the CamberLab pipeline.
 Cases are produced by copying this directory into `cases/case_XXXX/` and
 rendering the Jinja-suffixed files with each sample's flow conditions
 (`scripts/04_run_cfd.py`).

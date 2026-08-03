@@ -428,20 +428,48 @@ def overlay_training_points(fig: go.Figure, dataset: pd.DataFrame, re: float, th
 
 
 def status_summary(df: pd.DataFrame, skipped: pd.DataFrame) -> list[str]:
+    """Terse notes only — the plots already shade which region is untrained."""
     notes = []
     if not df.empty and (df["status"] == "extrapolated").any():
-        notes.append("This flow-physics range has no CFD training rows yet. Do not use extrapolated values as validated CFD-backed predictions.")
+        notes.append("The selected range has a part of untrained data.")
     if not df.empty and (df["status"] == "unvalidated").any():
-        notes.append("Unvalidated trained rows are included. Treat this range as low confidence until the CFD convergence gate passes.")
+        notes.append("The selected range has a part of unvalidated data.")
     if not skipped.empty:
-        notes.append(f"{len(skipped)} sweep point(s) were outside the current trained envelope and were skipped.")
+        notes.append(f"{len(skipped)} sweep point(s) fell outside the trained envelope and were skipped.")
     return notes
+
+
+def flow_physics_segments(
+    alphas: np.ndarray,
+    re: float,
+    thickness: float,
+    mode_regime: str | None,
+    bounds: dict,
+) -> pd.DataFrame:
+    """Group the sweep into contiguous AoA bands, one row per flow-physics range."""
+    labels = [mode_regime or classify_regime(float(a), re, thickness) for a in alphas]
+    rows = []
+    start = 0
+    for i in range(1, len(labels) + 1):
+        if i == len(labels) or labels[i] != labels[start]:
+            regime = labels[start]
+            status, status_text = physics_status(regime, bounds)
+            rows.append(
+                {
+                    "AoA band (deg)": f"{alphas[start]:.1f} – {alphas[i - 1]:.1f}",
+                    "Flow physics": FLOW_PHYSICS_LABELS[regime],
+                    "Training status": status,
+                    "Notes": status_text,
+                }
+            )
+            start = i
+    return pd.DataFrame(rows)
 
 
 bounds, dataset, metrics = load_artifacts()
 
 st.title("NACA CFD Surrogate")
-st.caption("Flow-physics-aware OpenFOAM RANS surrogate for symmetric NACA 4-digit airfoils.")
+st.caption("Flow-physics-aware RANS surrogate for steady state symmetric NACA 4-digit airfoils.")
 
 with st.sidebar:
     st.header("Inputs")
@@ -456,12 +484,10 @@ with st.sidebar:
     thickness = thickness_percent / 100.0
     re = st.number_input("Reynolds number", min_value=300_000.0, max_value=5_000_000.0, value=2_000_000.0, step=100_000.0, format="%.0f")
     alpha_min, alpha_max = st.slider("AoA sweep (deg)", 0.0, 16.0, (0.0, 16.0), step=0.5)
-    alpha_default = min(max(4.0, alpha_min), alpha_max)
-    alpha_query = st.slider("Selected AoA (deg)", alpha_min, alpha_max, alpha_default, step=0.5)
     n_points = st.slider("Sweep points", 21, 161, 61, step=10)
     family = st.selectbox("Model family", FAMILIES, index=FAMILIES.index("gp"))
     mode_options = {"Auto classification": None, **{FLOW_PHYSICS_LABELS[r]: r for r in REGIMES}}
-    mode_label = st.selectbox("Flow physics mode", list(mode_options))
+    mode_label = st.selectbox("Flow physics mode", list(mode_options), index=0)
     mode_regime = mode_options[mode_label]
     allow_untrained = st.checkbox("Allow untrained-flow extrapolation", value=True)
 
@@ -485,20 +511,7 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
 
-classified = classify_regime(alpha_query, re, thickness)
-active_regime = mode_regime or classified
-active_status, active_status_text = physics_status(active_regime, bounds)
-
-top_cols = st.columns([1.2, 1])
-top_cols[0].metric("Active flow physics", FLOW_PHYSICS_LABELS[active_regime])
-top_cols[1].metric("Training status", active_status)
-
-if active_status == "untrained":
-    st.warning(f"{FLOW_PHYSICS_LABELS[active_regime]}: {active_status_text} Values are extrapolated from a model trained without this flow-physics range.")
-elif active_status == "unvalidated":
-    st.warning(f"{FLOW_PHYSICS_LABELS[active_regime]}: {active_status_text}")
-else:
-    st.info(f"{FLOW_PHYSICS_LABELS[active_regime]}: {active_status_text}")
+alphas = np.linspace(alpha_min, alpha_max, n_points)
 
 if camber_unsupported:
     st.error(
@@ -506,7 +519,6 @@ if camber_unsupported:
         f"The surrogate prediction uses symmetric NACA 00{thickness_percent:02d}."
     )
 
-alphas = np.linspace(alpha_min, alpha_max, n_points)
 pred_df, skipped_df = sweep_predictions(
     alphas, re, thickness, family, mode_regime, bounds, allow_untrained
 )
@@ -520,18 +532,33 @@ if pred_df.empty:
 ld_clean = pred_df["L_over_D"].replace([np.inf, -np.inf], np.nan)
 best_idx = ld_clean.idxmax() if ld_clean.notna().any() else pred_df.index[0]
 best = pred_df.loc[best_idx]
-try:
-    selected = predict_point(alpha_query, re, thickness, family, mode_regime, bounds, allow_untrained)
-except OutOfDistributionError as exc:
-    st.warning(f"Selected AoA is outside the current prediction policy: {exc}")
-    selected = best.to_dict()
+max_cl = pred_df.loc[pred_df["Cl"].idxmax()]
+min_cd = pred_df.loc[pred_df["Cd"].idxmin()]
+
+# The sweep itself is the query, so the KPIs summarise the whole curve.
+sweep_status = (
+    "extrapolated"
+    if (pred_df["status"] == "extrapolated").any()
+    else "unvalidated"
+    if (pred_df["status"] == "unvalidated").any()
+    else str(pred_df["status"].mode().iat[0])
+)
+
+def kpi_note(row: pd.Series) -> str | None:
+    """Flag a KPI whose winning sweep point is not CFD-backed."""
+    if row["status"] == "extrapolated":
+        return "extrapolated"
+    if row["status"] == "unvalidated":
+        return "unvalidated"
+    return None
+
 
 kpi = st.columns(5)
-kpi[0].metric("Selected Cl", f"{selected['Cl']:.4f}")
-kpi[1].metric("Selected Cd", f"{selected['Cd']:.5f}")
-kpi[2].metric("Best L/D", f"{best['L_over_D']:.1f}")
-kpi[3].metric("AoA at best L/D", f"{best['alpha_deg']:.1f} deg")
-kpi[4].metric("Max Cl", f"{pred_df['Cl'].max():.4f}")
+kpi[0].metric("Best L/D", f"{best['L_over_D']:.1f}", delta=kpi_note(best), delta_color="off")
+kpi[1].metric("AoA at best L/D", f"{best['alpha_deg']:.1f} deg")
+kpi[2].metric("Max Cl", f"{max_cl['Cl']:.4f}", delta=kpi_note(max_cl), delta_color="off")
+kpi[3].metric("AoA at max Cl", f"{max_cl['alpha_deg']:.1f} deg")
+kpi[4].metric("Min Cd", f"{min_cd['Cd']:.5f}", delta=kpi_note(min_cd), delta_color="off")
 
 for note in status_summary(pred_df, skipped_df):
     st.warning(note)
@@ -549,10 +576,17 @@ plot_col_3, plot_col_4 = st.columns(2)
 plot_col_3.plotly_chart(curve_figure(pred_df, "L_over_D", "L_over_D_std", "Efficiency curve", "L/D"), use_container_width=True)
 plot_col_4.plotly_chart(polar_figure(pred_df), use_container_width=True)
 
+st.subheader("Flow physics across the AoA sweep")
+st.dataframe(
+    flow_physics_segments(alphas, re, thickness, mode_regime, bounds),
+    use_container_width=True,
+    hide_index=True,
+)
+
 st.subheader("Model Error Context")
 err_cols = st.columns(2)
-err_cols[0].write(metric_value(metrics, family, "Cl", selected["status"]))
-err_cols[1].write(metric_value(metrics, family, "Cd", selected["status"]))
+err_cols[0].write(metric_value(metrics, family, "Cl", sweep_status))
+err_cols[1].write(metric_value(metrics, family, "Cd", sweep_status))
 
 st.subheader("Prediction Table")
 table_cols = ["alpha_deg", "flow_physics", "status", "Cl", "Cl_std", "Cd", "Cd_std", "L_over_D", "L_over_D_std"]

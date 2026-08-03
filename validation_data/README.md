@@ -1,7 +1,7 @@
 # validation_data/
 
 Authoritative reference datasets for per-regime CFD validation of the
-NACASurrogate project. Every file in this tree is either downloaded from
+CamberLab project. Every file in this tree is either downloaded from
 a public, citable source or computed locally from a published reference
 solver (XFOIL) — never synthesized.
 

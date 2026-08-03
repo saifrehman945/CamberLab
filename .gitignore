@@ -1,5 +1,5 @@
 # =========================================================================
-# AeroSurrogate — .gitignore
+# CamberLab — .gitignore
 #
 # Strategy: track the reproducibility kernel only.
 #   Tracked  → scripts/, openfoam_template/, samples.csv, train/test_idx.npy,
@@ -51,3 +51,4 @@ Thumbs.db
 # --- LLM/models ---------------------------------------------------------
 .claude/
 .codex
+.agents

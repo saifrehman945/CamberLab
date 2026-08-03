@@ -1,6 +1,6 @@
 # OpenFOAM Template — Regime B (Near-Stall Separated)
 
-OpenFOAM 12 master case for **Regime B** of the NACASurrogate pipeline.
+OpenFOAM 12 master case for **Regime B** of the CamberLab pipeline.
 Modelled on `$FOAM_TUTORIALS/fluid/aerofoilNACA0012Steady` (the OpenFOAM
 Foundation's reference kOmegaSST aerofoil case) adapted to this project's
 patch contract and Regime B's CFD recipe (see `CLAUDE.md §10` for the
