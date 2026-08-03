@@ -33,20 +33,10 @@ Every prediction the app makes is labelled with the confidence the underlying CF
 data actually supports — trained and validated, trained but unvalidated, or
 extrapolated.
 
-## Screenshots
+## Application
 
-<!-- Replace the two placeholders below with real screenshots of the running app.
-     Suggested captures:
-       1. docs/images/app-overview.png  — full dashboard: sidebar inputs, aerofoil
-          preview, flow-physics status banner, Cl/Cd curves
-       2. docs/images/app-polar.png     — drag polar / L-D view with uncertainty
-          bands and training-point overlay
-     Recommended: 1600px wide PNG, light theme, browser chrome cropped out. -->
-
-|  |  |
-|---|---|
-| ![CamberLab dashboard — inputs, aerofoil preview, and Cl/Cd sweeps](docs/images/app-overview.png) |
-| *Dashboard: geometry preview, flow-physics classification, and Cl/Cd vs α* |
+![CamberLab dashboard — inputs, aerofoil preview, and Cl/Cd sweeps](docs/images/app-overview.png)
+*Dashboard: geometry preview, flow-physics classification, and Cl/Cd vs α* 
 
 ## Features
 

@@ -44,7 +44,7 @@ STATUS_COLORS = {
 }
 
 
-st.set_page_config(page_title="NACA CFD Surrogate", layout="wide")
+st.set_page_config(page_title="CamberLab ", layout="wide")
 
 
 @st.cache_data(show_spinner=False)
@@ -468,7 +468,7 @@ def flow_physics_segments(
 
 bounds, dataset, metrics = load_artifacts()
 
-st.title("NACA CFD Surrogate")
+st.title("CamberLab")
 st.caption("Flow-physics-aware RANS surrogate for steady state symmetric NACA 4-digit airfoils.")
 
 with st.sidebar:
