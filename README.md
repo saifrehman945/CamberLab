@@ -22,6 +22,8 @@ surrogate evaluation:
 (angle of attack, Reynolds number, thickness, flow physics) → (Cl, Cd, L/D)
 ```
 
+Live Demo : <https:/camberlab.streamlit.app/>
+
 The core idea is that **one CFD recipe cannot cover the whole design space**.
 Attached turbulent flow, near-stall separation, transitional low-Reynolds flow,
 and fully turbulent high-Reynolds flow are governed by different physics and need
