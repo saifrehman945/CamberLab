@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
 Script: predict.py
-Purpose: Thin CLI over scripts.surrogate.inference — query the trained
-         surrogate at a single (alpha_deg, Re, thickness) point. Points that
-         name or classify into an untrained regime, or fall outside that
-         regime's achieved training envelope, are rejected rather than
-         silently extrapolated.
+Purpose: Thin CLI over scripts.surrogate.inference — query the AirfRANS
+         surrogate at one (α, Re, NACA section) point. Out-of-envelope
+         queries are answered with a warning, never silently.
 
 Usage:
-    uv run python scripts/predict.py --alpha 4.0 --re 2.1e6 --thickness 0.12
-    uv run python scripts/predict.py --alpha 20 --re 4e6 --thickness 0.12  # expect rejection
+    uv run python scripts/predict.py --alpha 4 --re 3e6 --naca 2412
+    uv run python scripts/predict.py --alpha 4 --re 3e6 --naca 23012 --family all
+    uv run python scripts/predict.py --alpha 4 --re 3e6 --naca 2412 --task scarce --json
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -25,56 +25,51 @@ log = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.surrogate.inference import (  # noqa: E402
-    FAMILIES,
-    OutOfDistributionError,
-    predict,
-    predict_all,
-    predict_all_blended,
-    predict_blended,
-)
+from scripts.surrogate.data import TASKS  # noqa: E402
+from scripts.surrogate.inference import FAMILIES, naca_features, predict  # noqa: E402
+from scripts.surrogate.models import FAMILY_LABELS  # noqa: E402
 
 
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__)
+def parse_args(argv=None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--alpha", type=float, required=True, help="angle of attack, degrees")
-    p.add_argument("--re", type=float, required=True, help="Reynolds number")
-    p.add_argument("--thickness", type=float, required=True, help="max thickness / chord")
-    p.add_argument("--regime", choices=["A", "B", "C", "D"], default=None,
-                    help="explicit regime assertion (skips classify_regime)")
-    p.add_argument("--family", choices=[*FAMILIES, "all"], default="all")
-    return p.parse_args()
+    p.add_argument("--re", type=float, required=True, help="Reynolds number (chord-based)")
+    p.add_argument("--naca", required=True, help="NACA 4- or 5-digit code, e.g. 2412 or 23012")
+    p.add_argument("--family", choices=[*FAMILIES, "all"], default="gp")
+    p.add_argument("--task", choices=TASKS, default="full", help="which trained model set to use")
+    p.add_argument("--json", action="store_true", help="emit machine-readable JSON on stdout")
+    return p.parse_args(argv)
 
 
-def main() -> int:
-    args = parse_args()
-    # Auto mode (no --regime) blends overlapping validated regimes so predictions
-    # are continuous across boundaries; pinning --regime uses that single model.
-    blended = args.regime is None
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    families = FAMILIES if args.family == "all" else [args.family]
     try:
-        if args.family == "all":
-            if blended:
-                out = predict_all_blended(args.alpha, args.re, args.thickness)
-                weights, result = out["weights"], out["predictions"]
-                print(f"regime blend: {'  '.join(f'{r}={w:.2f}' for r, w in sorted(weights.items()))}")
-            else:
-                result = predict_all(args.alpha, args.re, args.thickness, regime=args.regime)
-            print(f"{'family':<8}{'Cl':>12}{'Cd':>12}")
-            for family, targets in result.items():
-                print(f"{family:<8}{targets['Cl']:>12.5f}{targets['Cd']:>12.5f}")
-        else:
-            if blended:
-                cl = predict_blended(args.alpha, args.re, args.thickness, family=args.family, target="Cl")
-                cd = predict_blended(args.alpha, args.re, args.thickness, family=args.family, target="Cd")
-            else:
-                cl = predict(args.alpha, args.re, args.thickness, family=args.family, target="Cl", regime=args.regime)
-                cd = predict(args.alpha, args.re, args.thickness, family=args.family, target="Cd", regime=args.regime)
-            print(f"{args.family}: Cl={cl:.5f}  Cd={cd:.5f}")
-    except OutOfDistributionError as exc:
-        print(f"REJECTED (out of distribution): {exc}", file=sys.stderr)
+        results = {f: predict(args.alpha, args.re, args.naca, f, args.task) for f in families}
+    except ValueError as exc:
+        log.error("%s", exc)
         return 2
+
+    if args.json:
+        sys.stdout.write(json.dumps({"alpha_deg": args.alpha, "Re": args.re, "naca": args.naca,
+                                     "task": args.task, "geometry": naca_features(args.naca),
+                                     "predictions": results}, indent=2) + "\n")
+        return 0
+
+    geo = naca_features(args.naca)
+    log.info("NACA %s at α = %.2f°, Re = %.3g (models: task '%s')", args.naca, args.alpha, args.re, args.task)
+    log.info("  geometry: t_max %.4f @ %.3f c, m_max %.4f @ %.3f c",
+             geo["t_max"], geo["x_tmax"], geo["m_max"], geo["x_m"])
+    for family, r in results.items():
+        cl = f"{r['Cl']:.4f}" + (f" ± {2 * r['Cl_std']:.4f}" if r["Cl_std"] is not None else "")
+        cd = f"{r['Cd']:.5f}" + (f" ± {2 * r['Cd_std']:.5f}" if r["Cd_std"] is not None else "")
+        log.info("  %-3s  Cl %s   Cd %s   L/D %.1f", FAMILY_LABELS[family], cl, cd, r["L_over_D"])
+    if any(r["Cl_std"] is not None for r in results.values()):
+        log.info("  (± values are 2σ posterior bands)")
+    if not next(iter(results.values()))["in_envelope"]:
+        log.warning("Query is outside the training envelope — treat as extrapolation.")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

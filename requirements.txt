@@ -17,16 +17,21 @@ numpy>=1.24.0
 pandas>=2.0.0
 scipy>=1.11.0
 
+# --- AirfRANS ingestion (PLAID/CGNS samples from Hugging Face parquet) ----
+# PLAID's PyPI name is `pyplaid` (docs: https://plaid-lib.readthedocs.io,
+# repo: https://github.com/PLAID-lib/plaid). NOT `plaid` / `plaid-lib`, which
+# are unrelated packages.
+datasets>=2.18
+huggingface_hub>=0.20
+pyarrow>=14.0
+pyplaid==0.1.7   # newest release whose Sample accepts this dataset's serialised schema (0.1.8+ reject it)
+
 # --- Surrogate models ----------------------------------------------------
-# Pinned to the minor release the committed models/*.joblib were pickled with;
+# Pinned to the minor release the committed models/*/*.joblib were pickled with;
 # anything else triggers sklearn's InconsistentVersionWarning on load.
 # Bump only together with a retrain (scripts/09_train_surrogates.py).
 scikit-learn==1.8.*
-# NOTE: the committed models/krg_*.joblib artifacts do not unpickle under any
-# currently installable SMT (tested 2.3 - 2.12 and >= 2.13; each fails with a
-# different moved-module / renamed-enum error). Use --family gp|rf|mlp until
-# the Kriging models are retrained; see README.md → Project status.
-smt>=2.3.0
+smt==2.15.0  # exact pin: models/*/krg_*.joblib only reload under the SMT they were saved with
 
 # --- Sensitivity analysis ------------------------------------------------
 SALib>=1.4.7
@@ -42,3 +47,6 @@ joblib>=1.3.0
 tqdm>=4.65.0
 jinja2>=3.1.0
 
+
+# --- Tests ----------------------------------------------------------------
+pytest>=8.0

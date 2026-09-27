@@ -1,27 +1,29 @@
-# CLAUDE.md — Development Guide for CamberLab (Regime-Aware Redesign)
+# CLAUDE.md — Development Guide for CamberLab (AirfRANS surrogate)
 
 This file tells Claude (or any LLM) how to work on the CamberLab project
-correctly. Read this entire file before writing any code, editing any OpenFOAM
-dictionary, or suggesting any shell commands.
+correctly. Read this entire file before writing any code or suggesting any
+shell commands.
 
 ---
 
 ## 1. Project Summary
 
-CamberLab is a **regime-aware** parametric surrogate modeling pipeline for
-NACA 4-digit aerofoils. The aerodynamic design space is partitioned into four
-flow regimes, each with its own validated CFD template (turbulence model, wall
-treatment, y+ target, mesh strategy). Samples from all regimes are then merged
-into a single ML-ready dataset, with `regime_id` encoded as an input feature.
+CamberLab predicts the lift and drag coefficients (C_L, C_D) of NACA 4- and
+5-digit aerofoils from angle of attack, Reynolds number and section geometry,
+using fast scalar surrogates (GP, RF, MLP, Kriging) trained on **AirfRANS**
+(Bonnet et al., NeurIPS 2022): 1,000 steady 2D incompressible RANS
+simulations (OpenFOAM, k-ω SST), Re 2–6×10⁶, α −5° to 15°, chord 1 m.
 
-It replaces expensive OpenFOAM RANS simulations with fast data-driven models
-(GP, RF, MLP, Kriging) trained on a 175-sample Latin Hypercube dataset spanning
-the four regimes (per-regime allocation A=80, B=25, C=30, D=40).
+It deliberately regresses the **coefficients**, not the flow field: the
+AirfRANS paper's field models predict drag poorly, and beating their drag
+prediction is the headline comparison (`results/airfrans_benchmark.md`).
 
-Full design rationale: `README_complete.md`. Quick design summary: `README.md`.
+The project previously generated its own OpenFOAM data with a four-regime
+design (regime classifier, one-hot regime features, per-regime templates).
+That pipeline is **retired** and archived in `legacy/regime_v1/`. Do not
+revive regimes, regime features or regime templates in the active code.
 
-The four regimes are defined precisely in §10 of this file. The regime
-classification rule is in §11. The case metadata schema is in §12.
+Final report: `results/airfrans_report.md`. User-facing summary: `README.md`.
 
 ---
 
@@ -75,7 +77,226 @@ conda activate ...       # no conda/micromamba in this project
 
 ---
 
-## 3. OpenFOAM Version
+## 3. Data Source — AirfRANS
+
+- Variant: **`PLAID-datasets/AirfRANS_remeshed`** (Hugging Face, ~611 MB,
+  1,000 samples, PLAID/CGNS samples in 3 parquet shards). Licence: ODbL 1.0
+  (© Safran) — keep the attribution in the app footer and README.
+- The user downloads it once; **code never downloads data** and must not
+  re-download silently:
+
+  ```bash
+  huggingface-cli download PLAID-datasets/AirfRANS_remeshed \
+    --repo-type dataset --local-dir data/airfrans_remeshed
+  ```
+
+- Every script resolves the location as `--data-dir` > `$AIRFRANS_DIR` >
+  `data/airfrans_remeshed` (`scripts/airfrans/io.py::resolve_data_dir`).
+  `data/` is gitignored.
+- Samples are pickled PLAID sample dicts. They deserialise **only** with
+  `pyplaid==0.1.7` (0.1.8+ and 1.x reject the schema); PLAID's PyPI name is
+  `pyplaid` (not `plaid` / `plaid-lib`, which are unrelated packages). The
+  single `pickle.loads` call lives in `scripts/airfrans/io.py::deserialise`
+  — the one sanctioned exception to "no pickle".
+- Per-sample scalars: `angle_of_attack` (**radians**), `inlet_velocity`
+  (m/s), `C_L`, `C_D`. No original simulation name is stored; `sample_id` is
+  the row index in `all_samples`.
+- Re = U∞·c/ν with c = 1 m and ν(298.15 K) = 1.5498×10⁻⁵ m²/s from AirfRANS'
+  polynomial. AirfRANS' own nominal Re is ~0.6% lower (they effectively use
+  ν ≈ 1.56×10⁻⁵); this is a constant factor and does not affect models.
+- The aerofoil wall is the mesh boundary loop off the clip box (topological,
+  in `scripts/airfrans/geometry.py::extract_surface`), cross-checked against
+  `implicit_distance ≈ 0`.
+
+## 4. Pipeline and Feature Schema
+
+| Stage | Script | Output |
+|---|---|---|
+| Inspect (Gate 2) | `scripts/airfrans/inspect_dataset.py` | `results/airfrans_inspection.md` |
+| Ingest (Gate 3) | `scripts/20_ingest_airfrans.py` | `results/airfrans_dataset.csv`, `results/airfrans_surfaces.npz` |
+| QA (Gate 4) | `scripts/21_qa_airfrans.py` | `results/airfrans_qa_flags.csv`, `results/airfrans_qa.md` |
+| Splits | `scripts/22_make_splits.py` | `splits/airfrans_{task}_{train,test}_idx.npy` |
+| Train (Gate 6) | `scripts/09_train_surrogates.py --task all` | `models/{task}/` |
+| Evaluate | `scripts/10_global_validation.py` | `results/airfrans_metrics.csv`, `results/airfrans_benchmark.md` |
+| Query | `scripts/predict.py`, `scripts/11_sweep_curves.py`, `app.py` | — |
+
+Model inputs (`scripts/surrogate/data.py::FEATURES`), standardised with a
+`StandardScaler` saved as `models/{task}/preprocessor.joblib`:
+
+```
+X = [alpha_deg, log10_Re, t_max, x_tmax, m_max, x_m]      # shape (N, 6)
+```
+
+- Geometry features come from `section_features()` applied to the wall
+  points at ingestion and to `naca_coordinates(code)` at inference — **the
+  same function on both sides**. Never compute query features any other way.
+- `m_max` is measured from the geometric chord (nose min-x point to TE), so
+  it reads below nominal NACA camber for cambered sections; this is
+  consistent between training and inference. `x_m = 0` for symmetric
+  sections.
+- Targets: `Cl` and `log(Cd)`; Cd predictions are back-transformed with
+  `exp`. Metrics are always reported on Cd, not log Cd.
+
+## 5. Data Integrity and Split Rules
+
+- **Never edit, drop, impute or fabricate rows** of
+  `results/airfrans_dataset.csv`. QA outcomes go to the separate
+  `results/airfrans_qa_flags.csv` (`qa_pass`, `qa_reason`); excluded rows
+  are filtered at split time, never deleted. Outliers are listed, never
+  auto-dropped.
+- Splits are the **official AirfRANS memberships** from the dataset card
+  (`full` 800/200, `scarce` 200/200 sharing the `full` test set, `reynolds`
+  504/496, `aoa` 804/196). They are frozen: `22_make_splits.py` refuses to
+  overwrite an index file with different contents.
+- Test indices are sacred: never used for fitting, model selection or
+  tuning. Hyperparameters (RF `min_samples_leaf`, MLP patience/L2) are
+  chosen by 5-fold CV on the training rows only. `10_global_validation.py`
+  is the only script that reads test indices.
+
+---
+
+## 6. Python Code Rules
+
+### File structure
+
+```python
+#!/usr/bin/env python3
+"""
+Script: <filename>
+Stage:  <stage number and name>
+Purpose: <one sentence>
+
+Usage:
+    uv run python scripts/<filename>
+"""
+```
+
+### Paths
+
+All paths must be relative to the project root. Use `pathlib.Path`, never `os.path`:
+
+```python
+from pathlib import Path
+
+PROJECT_ROOT  = Path(__file__).resolve().parent.parent
+RESULTS_DIR   = PROJECT_ROOT / "results"
+MODELS_DIR    = PROJECT_ROOT / "models"
+SPLITS_DIR    = PROJECT_ROOT / "splits"
+SCRIPTS_DIR   = PROJECT_ROOT / "scripts"
+DATA_DIR      = PROJECT_ROOT / "data" / "airfrans_remeshed"   # or --data-dir / $AIRFRANS_DIR
+```
+
+### Random seeds
+
+All stochastic operations use `random_state=42` or `np.random.seed(42)`.
+Never use unseeded randomness.
+
+### Logging
+
+```python
+import logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s — %(message)s")
+log = logging.getLogger(__name__)
+
+log.info("Ingesting 1000 AirfRANS samples...")
+log.warning("NACA 2412 at Re=1e7 is outside the training envelope")
+log.error("Gate 4 failed: 3.1% of rows fail hard checks")
+```
+
+### Data types
+
+- All parameter arrays: `np.float64`
+- Sample / split indices: `np.int32`
+- Saved models: `joblib.dump` / `joblib.load` (not pickle directly)
+
+---
+
+## 7. Surrogate Modeling Rules
+
+- Families (`scripts/surrogate/models.py`), one model per target per family:
+  - **GP**: anisotropic `Matern(nu=2.5) * ConstantKernel + WhiteKernel`,
+    `normalize_y=True`, `n_restarts_optimizer=5`.
+  - **RF**: 500 trees, `min_samples_leaf` by CV from {1, 2, 4}.
+  - **MLP**: `(128, 128, 64)`, `early_stopping=True`, wrapped in
+    `TransformedTargetRegressor(StandardScaler)`; patience and L2 by CV.
+  - **KRG**: SMT `KRG`, anisotropic θ, `eval_noise=True`.
+- Persist with `joblib.dump(..., compress=3)` to
+  `models/{task}/{family}_{Cl,Cd}.joblib`, plus `preprocessor.joblib`,
+  `envelope.json` (train feature ranges, package versions, fit metadata) and
+  `train_pred.npz` (Gate 6 reload check). `scikit-learn==1.8.*` and
+  `smt==2.15.0` are pinned because the pickles only reload under the
+  versions they were saved with — retrain whenever you bump either.
+- Inference (`scripts/surrogate/inference.py`):
+  `predict(alpha_deg, Re, naca, family="gp", task="full")` →
+  `{Cl, Cd, L_over_D, Cl_std, Cd_std, in_envelope, warnings}`.
+  Out-of-envelope queries return a prediction **with a warning**, never
+  silently and never refused. σ is reported for GP and KRG only.
+- Report R², RMSE, MAE, Spearman ρ and the paper's relative error
+  `|(true − pred)/true|` (mean **and** median — the mean blows up for Cl
+  near zero). The paper's `mean_score_force` is a raw ratio, not a
+  percentage.
+- Envelope and limitations to keep in docs: Re 2–6×10⁶, α −5° to 15°, NACA
+  4/5-digit only; fully turbulent SST (no transition; Cd biased high vs
+  experiment at lower Re); steady RANS near stall (α > ~12°) least reliable;
+  accuracy bounded by AirfRANS' own CFD.
+
+## 8. Tests and Gates
+
+`uv run pytest` must pass. It covers geometry (analytic recovery, mesh-like
+resampling), the Gate 3 dataset schema, Gate 6 model reloads, every CLI
+family, and a headless run of the Streamlit app.
+
+---
+
+## 9. What Not to Do
+
+| Do not | Instead |
+|---|---|
+| Edit, drop or fabricate dataset rows | Flag in `airfrans_qa_flags.csv`; filter at split time |
+| Touch test indices outside `10_global_validation.py` | 5-fold CV on train rows |
+| Compute query geometry features ad hoc | `naca_coordinates` + `section_features` |
+| Download data from code | Read the local copy; tell the user the download command |
+| Upgrade `pyplaid` past 0.1.7 | It cannot read this dataset |
+| Bump scikit-learn / smt without retraining | Retrain all tasks, then update the pins |
+| Reintroduce regimes / regime one-hot | One unified surrogate over the AirfRANS envelope |
+| Use system Python | `uv run python ...` (or activate `.venv`) |
+| Use `os.path` | `pathlib.Path` |
+| Use `print()` for logging | `logging.info()` / `logging.warning()` |
+| Use `fit_transform` on test data | `transform` only on test data |
+| Hard-code absolute paths | Use `PROJECT_ROOT` relative paths |
+| Use `pickle` directly | `joblib.dump` / `joblib.load` (sole exception: `io.deserialise`) |
+| Commit `data/` | It is gitignored |
+
+## 10. Quick Reference — Key Commands
+
+```bash
+uv venv && uv pip install -r requirements.txt
+
+uv run python scripts/airfrans/inspect_dataset.py
+uv run python scripts/20_ingest_airfrans.py
+uv run python scripts/21_qa_airfrans.py
+uv run python scripts/22_make_splits.py
+uv run python scripts/09_train_surrogates.py --task all
+uv run python scripts/10_global_validation.py
+
+uv run python scripts/predict.py --alpha 4 --re 3e6 --naca 2412 --family all
+uv run python scripts/11_sweep_curves.py --naca 23012 --re 4e6
+uv run streamlit run app.py
+uv run pytest
+```
+
+---
+
+## Appendix — Legacy OpenFOAM regime pipeline (retired)
+
+Everything below applies **only** to the archived code in
+`legacy/regime_v1/` (OpenFOAM 12 cases, gmsh meshes, per-regime templates).
+It is kept for reference if that pipeline is ever revisited; it does not
+govern the active AirfRANS code. The regime definitions, classification rule,
+case-metadata schema and validation phases are documented in
+`legacy/regime_v1/README_complete.md` and in git history.
+
+### L3. OpenFOAM Version
 
 **This project targets OpenFOAM 12 (OpenFOAM Foundation release).**
 
@@ -95,12 +316,12 @@ automation and templates.
 
 ---
 
-## 4. How to Get Correct OpenFOAM 12 File Syntax
+### L4. How to Get Correct OpenFOAM 12 File Syntax
 
 **This is the most important section. Never guess OpenFOAM dictionary syntax.
 Always verify using one or more of the three methods below.**
 
-### Method 1 — Copy from `$FOAM_TUTORIALS`
+#### Method 1 — Copy from `$FOAM_TUTORIALS`
 
 ```bash
 echo $FOAM_TUTORIALS                          # typically /opt/openfoam12/tutorials
@@ -124,7 +345,7 @@ grep -rl "forceCoeffs" $FOAM_TUTORIALS/
 tutorial file for the relevant regime and base your version on it. Do not
 write dictionaries from memory.**
 
-### Method 2 — `foamInfo <keyword>`
+#### Method 2 — `foamInfo <keyword>`
 
 ```bash
 # Schemes / solvers:
@@ -157,7 +378,7 @@ foamInfo forces
 foamInfo singleGraph
 ```
 
-### Method 3 — `foamSearch`
+#### Method 3 — `foamSearch`
 
 ```bash
 foamSearch $FOAM_TUTORIALS functions liftDir
@@ -167,7 +388,7 @@ foamSearch $FOAM_TUTORIALS 0/nuTilda freestream
 foamSearch $FOAM_TUTORIALS constant/momentumTransport SpalartAllmaras
 ```
 
-### Verification order for any OpenFOAM keyword
+#### Verification order for any OpenFOAM keyword
 
 1. Open the relevant regime's tutorial under `$FOAM_TUTORIALS/`
 2. Run `foamInfo <keyword>`
@@ -176,9 +397,9 @@ foamSearch $FOAM_TUTORIALS constant/momentumTransport SpalartAllmaras
 
 ---
 
-## 5. OpenFOAM File Writing Rules
+### L5. OpenFOAM File Writing Rules
 
-### Header
+#### Header
 
 Every OpenFOAM file must start with the correct FoamFile header:
 
@@ -205,14 +426,14 @@ The `class` field must match the file type exactly:
 - `volVectorField` — for `U`
 - `volScalarField` — for `p, k, omega, nut, nuTilda, kl`
 
-### Indentation and formatting
+#### Indentation and formatting
 
 - 4 spaces for indentation (no tabs)
 - Opening brace `{` on the same line as the keyword
 - Closing brace `}` on its own line
 - Semicolon after every value assignment
 
-### Turbulence dictionary (`constant/momentumTransport`) — per regime
+#### Turbulence dictionary (`constant/momentumTransport`) — per regime
 
 In OpenFOAM 12 the turbulence dictionary is `constant/momentumTransport`
 (not `turbulenceProperties` — that name is from older versions).
@@ -258,7 +479,7 @@ If `kkLOmega` is not available in the installed build, fall back to
 turbulence intensity of ~0.1% to provoke transition. Do NOT silently switch
 models — log the substitution in `case_metadata.json`.
 
-### Field boundary conditions — per regime
+#### Field boundary conditions — per regime
 
 **Regimes A and D (SA + wall functions, y+ ≈ 30–80):**
 
@@ -311,7 +532,7 @@ aerofoil { type nutLowReWallFunction; value uniform 0; }
 Free-stream turbulence intensity for Regime C should reflect the experimental
 reference — typically `Tu = 0.1%` for clean-tunnel low-Re data.
 
-### Angle of attack implementation
+#### Angle of attack implementation
 
 AoA is implemented by rotating the inlet velocity vector — **never by rotating
 the mesh**. The mesh always has the chord along the x-axis. For α in radians:
@@ -335,7 +556,7 @@ dragDir     (DRAGDIR_X DRAGDIR_Y 0);   // ( cos(α), sin(α), 0)
 These values are computed by `05_prepare_case.py` and substituted into the
 regime template via Jinja2.
 
-### forceCoeffs function object (OpenFOAM 12 syntax)
+#### forceCoeffs function object (OpenFOAM 12 syntax)
 
 ```c++
 functions
@@ -368,13 +589,13 @@ functions
 Verify against: `foamInfo forceCoeffs` and
 `foamSearch $FOAM_TUTORIALS forceCoeffs`.
 
-### Schemes (`fvSchemes`) — per regime
+#### Schemes (`fvSchemes`) — per regime
 
 - Regimes A, D (attached, robust): second-order; `div(phi,U) Gauss linearUpwind grad(U);`
 - Regime B (separation): bounded second-order; `div(phi,U) Gauss linearUpwindV grad(U);` with stronger limiters on `div(phi,k)` and `div(phi,omega)` (`Gauss upwind` is acceptable for stability)
 - Regime C (transition): same bounded second-order as B; transition equations benefit from upwinded scalar fluxes
 
-### Solvers and relaxation (`fvSolution`) — per regime
+#### Solvers and relaxation (`fvSolution`) — per regime
 
 Baseline SIMPLE settings (all regimes):
 
@@ -403,80 +624,10 @@ For Regime B (near-stall), reduce all relaxation factors by 30% and increase
 
 ---
 
-## 6. Python Code Rules
 
-### File structure
+### L7. Meshing Rules (gmsh)
 
-```python
-#!/usr/bin/env python3
-"""
-Script: <filename>
-Stage:  <stage number and name>
-Purpose: <one sentence>
-
-Usage:
-    uv run python scripts/<filename>
-"""
-```
-
-### Paths
-
-All paths must be relative to the project root. Use `pathlib.Path`, never `os.path`:
-
-```python
-from pathlib import Path
-
-PROJECT_ROOT  = Path(__file__).resolve().parent.parent
-CASES_DIR     = PROJECT_ROOT / "cases"
-RESULTS_DIR   = PROJECT_ROOT / "results"
-MODELS_DIR    = PROJECT_ROOT / "models"
-SCRIPTS_DIR   = PROJECT_ROOT / "scripts"
-TEMPLATES_DIR = PROJECT_ROOT / "templates"
-VALIDATION_DIR = PROJECT_ROOT / "validation"
-```
-
-### Random seeds
-
-All stochastic operations use `random_state=42` or `np.random.seed(42)`.
-Never use unseeded randomness.
-
-### Logging
-
-```python
-import logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s — %(message)s")
-log = logging.getLogger(__name__)
-
-log.info("Generating LHS sample for regime A...")
-log.warning("Case 0042 did not converge — skipping")
-log.error("checkMesh failed for case 0017")
-```
-
-### Subprocess calls (OpenFOAM)
-
-```python
-import subprocess
-
-result = subprocess.run(
-    ["foamRun"], cwd=case_dir, capture_output=True, text=True
-)
-if result.returncode != 0:
-    log.error(f"foamRun failed in {case_dir}: {result.stderr[-500:]}")
-    return False
-```
-
-### Data types
-
-- All parameter arrays: `np.float64`
-- Case indices: `np.int32`
-- Regime labels: stored as `category` dtype in pandas, encoded as one-hot for surrogate input
-- Saved models: `joblib.dump` / `joblib.load` (not pickle directly)
-
----
-
-## 7. Meshing Rules (gmsh)
-
-### gmsh version
+#### gmsh version
 
 Always use gmsh via the Python API (installed from PyPI into `.venv`):
 
@@ -486,7 +637,7 @@ gmsh.initialize()
 gmsh.option.setNumber("General.Terminal", 0)
 ```
 
-### Mesh quality requirements
+#### Mesh quality requirements
 
 Before accepting any mesh, verify with `checkMesh`:
 
@@ -500,7 +651,7 @@ Before accepting any mesh, verify with `checkMesh`:
 Parse `checkMesh` output in Python and raise an exception if limits are
 exceeded — do not silently continue with a bad mesh.
 
-### Per-regime mesh strategy
+#### Per-regime mesh strategy
 
 | Regime | Target y+ | Prism layers | Growth ratio | Wake refinement | Cell count |
 |---|---|---|---|---|---|
@@ -512,7 +663,7 @@ exceeded — do not silently continue with a bad mesh.
 Domain extent: 20c upstream, 30c downstream, 20c transverse (all regimes).
 Wake refinement zone is regime-specific to capture separation/transition.
 
-### First cell height function (y+ target as input)
+#### First cell height function (y+ target as input)
 
 ```python
 def first_cell_height(Re: float, y_plus: float,
@@ -541,9 +692,9 @@ The achieved y+ is harvested post-run and stored in `case_metadata.json`.
 
 ---
 
-## 8. CFD Automation Rules
+### L8. CFD Automation Rules
 
-### Template substitution
+#### Template substitution
 
 Use Jinja2 for all OpenFOAM template substitution. Never use `.replace()` for
 multi-variable substitution.
@@ -574,7 +725,7 @@ Template files use Jinja2 syntax: `{{ UX }}`, `{{ UY }}`, etc. The template
 filename suffix `.jinja` distinguishes template files from already-rendered
 files copied verbatim.
 
-### Parallelism
+#### Parallelism
 
 ```bash
 parallel -j 4 \
@@ -595,7 +746,7 @@ cmd = (
 subprocess.run(cmd, shell=True, check=True)
 ```
 
-### Convergence check — regime-aware
+#### Convergence check — regime-aware
 
 A case is converged when ALL of the following are true:
 
@@ -618,357 +769,3 @@ exhibits persistent low-frequency oscillation even in steady RANS.
 
 ---
 
-## 9. Surrogate Modeling Rules
-
-### Inputs
-
-The global surrogate consumes:
-
-```
-X = [alpha_deg, Re, thickness, regime_onehot_A, regime_onehot_B,
-     regime_onehot_C, regime_onehot_D]                  # shape (N, 7)
-```
-
-Regime is one-hot encoded (4 columns) to avoid imposing a false ordinal on the
-categorical regime variable. Continuous features (`alpha_deg`, `Re`,
-`thickness`) are standardized; one-hot columns are passed through unchanged.
-
-```python
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import StandardScaler
-
-preproc = ColumnTransformer(
-    transformers=[
-        ("num", StandardScaler(), ["alpha_deg", "Re", "thickness"]),
-        ("cat", "passthrough",    ["regime_A", "regime_B", "regime_C", "regime_D"]),
-    ]
-)
-X_train_proc = preproc.fit_transform(X_train)
-X_test_proc  = preproc.transform(X_test)
-joblib.dump(preproc, MODELS_DIR / "preprocessor.joblib")
-```
-
-### Train-test discipline
-
-The 35 test samples saved in `test_idx.npy` at DOE time are sacred:
-- Never train on them
-- Never use them to select hyperparameters (use cross-validation on the training set only)
-- Never re-run CFD based on test set performance
-- Report final metrics on the test set exactly once at the end
-
-The split is stratified by regime: each regime contributes its 20% to the
-test set so no regime is absent from test-time evaluation.
-
-### Model persistence
-
-```python
-joblib.dump(preproc, MODELS_DIR / "preprocessor.joblib")
-joblib.dump(gp_Cl,   MODELS_DIR / "gp_Cl.joblib")
-joblib.dump(gp_Cd,   MODELS_DIR / "gp_Cd.joblib")
-joblib.dump(rf_Cl,   MODELS_DIR / "rf_Cl.joblib")
-joblib.dump(rf_Cd,   MODELS_DIR / "rf_Cd.joblib")
-joblib.dump(mlp_Cl,  MODELS_DIR / "mlp_Cl.joblib")
-joblib.dump(mlp_Cd,  MODELS_DIR / "mlp_Cd.joblib")
-joblib.dump(krg_Cl,  MODELS_DIR / "krg_Cl.joblib")
-joblib.dump(krg_Cd,  MODELS_DIR / "krg_Cd.joblib")
-```
-
-### Metrics — global AND per-regime
-
-Always report R², RMSE, MAE both globally and broken down by regime:
-
-```python
-from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
-
-def report_metrics(y_true, y_pred, regime_labels):
-    rows = [{"slice": "global",
-             "R2":   r2_score(y_true, y_pred),
-             "RMSE": mean_squared_error(y_true, y_pred, squared=False),
-             "MAE":  mean_absolute_error(y_true, y_pred)}]
-    for r in ["A", "B", "C", "D"]:
-        m = regime_labels == r
-        if m.sum() == 0:
-            continue
-        rows.append({"slice": f"regime_{r}",
-                     "R2":   r2_score(y_true[m], y_pred[m]),
-                     "RMSE": mean_squared_error(y_true[m], y_pred[m], squared=False),
-                     "MAE":  mean_absolute_error(y_true[m], y_pred[m])})
-    return rows
-```
-
-A model is considered acceptable when each per-regime R² ≥ 0.90 for Cl and
-≥ 0.85 for Cd. Global R² alone is misleading because regimes with more samples
-dominate.
-
----
-
-## 10. Flow Regimes Specification
-
-### Regime A — Attached turbulent
-
-| Property | Value |
-|---|---|
-| α range | 0°–8° |
-| Re range | 1.5×10⁶ – 3×10⁶ |
-| Thickness | 0.10 – 0.18 |
-| Physics | Attached turbulent BL, mild adverse pressure gradients, limited separation |
-| Turbulence model | `SpalartAllmaras` (preferred); `kOmegaSST` with wall functions acceptable |
-| Wall treatment | Wall functions (`nutUSpaldingWallFunction`) |
-| Target y+ | 20–50 (centred at 30) |
-| Prism layers | 15–20 |
-| Cell count | 80k–200k |
-| End time (iterations) | 2000 |
-| Notes | First regime to validate. Fast, robust, low cell count. |
-
-### Regime B — Near-stall separated
-
-| Property | Value |
-|---|---|
-| α range | 10°–16° |
-| Re range | 1×10⁶ – 3×10⁶ |
-| Thickness | 0.12 – 0.24 |
-| Physics | Strong adverse pressure gradients, partial separation, wake growth, stall onset |
-| Turbulence model | `kOmegaSST` (fully resolved) |
-| Wall treatment | Fully resolved (`nutLowReWallFunction`, `kLowReWallFunction`, `omegaWallFunction`) |
-| Target y+ | < 1 (centred at 0.5) |
-| Prism layers | 30–40 |
-| Cell count | 300k – 1M |
-| End time | 5000 |
-| Notes | Tighter relaxation; longer run; convergence may stall. URANS as future option. |
-
-### Regime C — Transitional low-Re
-
-| Property | Value |
-|---|---|
-| α range | 0°–8° |
-| Re range | 3×10⁵ – 1×10⁶ |
-| Thickness | 0.08 – 0.15 |
-| Physics | Laminar BL, transition, laminar separation bubbles |
-| Turbulence model | `kkLOmega` (transition); fallback `kOmegaSST` with low Tu inlet |
-| Wall treatment | Fully resolved |
-| Target y+ | < 1 (centred at 0.5) |
-| Prism layers | 35–45 |
-| Cell count | 500k – 1.2M |
-| End time | 4000 |
-| Notes | Most physically delicate regime. Implement only after A and B are locked. |
-
-### Regime D — Fully turbulent high-Re attached
-
-| Property | Value |
-|---|---|
-| α range | 0°–6° |
-| Re range | 2×10⁶ – 5×10⁶ |
-| Thickness | 0.10 – 0.18 |
-| Physics | Fully turbulent attached flow, minimal transition or separation |
-| Turbulence model | `SpalartAllmaras` |
-| Wall treatment | Wall functions (`nutkWallFunction` or `nutUSpaldingWallFunction`) |
-| Target y+ | 30–80 (centred at 50) |
-| Prism layers | 12–18 |
-| Cell count | 50k–150k |
-| End time | 2000 |
-| Notes | Cheapest regime per sample. Overlaps with A; classifier rule disambiguates. |
-
----
-
-## 11. Regime Classification Rule
-
-At DOE time the regime is known by construction (each sample is drawn from
-exactly one regime's bounding box). The classifier is used at **inference**
-time — when querying the surrogate at an arbitrary `(α, Re, t)` point, or
-when assigning labels to OOD probes during validation.
-
-**Priority rule** (apply in order; first match wins):
-
-```python
-def classify_regime(alpha_deg: float, Re: float, thickness: float) -> str:
-    if alpha_deg >= 10.0:
-        return "B"                          # near-stall takes priority over Re
-    if Re < 1.0e6:
-        return "C"                          # low-Re takes priority over D
-    if Re >= 2.0e6 and alpha_deg <= 6.0 and 0.10 <= thickness <= 0.18:
-        return "D"                          # high-Re attached subset
-    return "A"                              # default attached turbulent
-```
-
-Notes on edge cases:
-
-- The α ∈ (8°, 10°) band falls to regime A under this rule. Phase 1 validation
-  is performed at α ≤ 8°, so this is safe.
-- The Re ∈ (1×10⁶, 1.5×10⁶) band for low α falls to regime A, which is
-  acceptable — A's turbulence model is also valid at this Re.
-- A point outside every regime's bounding box (e.g. α=20°, Re=4×10⁶) gets
-  the nearest regime label by this rule and is flagged `ood=True` in
-  `case_metadata.json`. Such points should not be added to the CFD dataset.
-
----
-
-## 12. Case Metadata Schema (`case_metadata.json`)
-
-Every case writes a `case_metadata.json` after Stage 7 (harvest):
-
-```json
-{
-  "case_id": "case_0042",
-  "regime": "A",
-  "alpha_deg": 4.123,
-  "Re": 2.1e6,
-  "thickness": 0.12,
-
-  "template": "regime_A",
-  "turbulence_model": "SpalartAllmaras",
-  "wall_treatment": "nutUSpaldingWallFunction",
-
-  "y_plus_target": 30.0,
-  "y_plus_min": 18.4,
-  "y_plus_mean": 31.7,
-  "y_plus_max": 47.2,
-
-  "cells_total": 142308,
-  "non_orthogonality_max": 38.4,
-  "skewness_max": 1.21,
-
-  "runtime_s": 412.6,
-  "iterations": 2000,
-  "residuals_final": {"Ux": 3.1e-6, "Uy": 4.8e-6, "p": 7.2e-6, "nuTilda": 9.1e-7},
-
-  "Cl_mean": 0.456,
-  "Cl_std":  0.0012,
-  "Cd_mean": 0.0098,
-  "Cd_std":  0.00008,
-  "L_over_D": 46.5,
-
-  "converged": true,
-  "ood": false,
-  "notes": ""
-}
-```
-
-The dataset CSV is the joined projection of all `case_metadata.json` files;
-the per-case JSON is the source of truth for everything else (residual
-history, mesh quality, etc.).
-
----
-
-## 13. Validation Phases — Do Not Skip
-
-The pipeline is implemented and validated regime-by-regime:
-
-| Phase | Goal | Output |
-|---|---|---|
-| 1 | Lock Regime A template against NACA0012 reference | `validation/regime_A/report.md` |
-| 2 | Lock Regime B template (near-stall) | `validation/regime_B/report.md` |
-| 3 | Lock Regime C template (transitional) | `validation/regime_C/report.md` |
-| 4 | Lock Regime D template (high-Re) | `validation/regime_D/report.md` |
-| 5 | Generate full 175-case dataset | `dataset_clean.csv` |
-| 6 | Train and validate unified surrogate | `results/` |
-
-A regime is **locked** when its NACA0012 probe cases (table in `README.md`)
-agree with the canonical reference within these tolerances:
-
-| Metric | Tolerance |
-|---|---|
-| ΔCl (vs reference) | ≤ 5% of reference Cl |
-| ΔCd (vs reference) | ≤ 10% of reference Cd |
-| Cp curve | qualitative match; same suction-peak location |
-
-Phase 1 (Regime A) is the active focus. **Do not begin Phase 2, 3, 4, or 5
-until Regime A is locked.** If a regime fails to validate within reasonable
-effort, document the failure in its `report.md`, exclude its samples from
-the dataset, and proceed to the surrogate stage on the remaining regimes.
-
----
-
-## 14. What Not to Do
-
-| Do not | Instead |
-|---|---|
-| Guess OpenFOAM dict syntax | Use `$FOAM_TUTORIALS`, `foamInfo`, `foamSearch` |
-| Use `turbulenceProperties` | Use `constant/momentumTransport` (OpenFOAM 12) |
-| Use one template for multiple regimes | Each regime has its own template directory |
-| Rotate the mesh for AoA | Rotate the inlet velocity vector |
-| Use system Python | `uv run python ...` (or activate `.venv`) |
-| Use `os.path` | `pathlib.Path` |
-| Use `print()` for logging | `logging.info()` / `logging.warning()` |
-| Use `fit_transform` on test data | `transform` only on test data |
-| Hard-code absolute paths | Use `PROJECT_ROOT` relative paths |
-| Use `pickle` directly | Use `joblib.dump` / `joblib.load` |
-| Skip phase validation | Lock each regime against NACA0012 before generating its dataset slice |
-| Encode regime as an integer 0–3 | Use one-hot (4 columns); regime is categorical |
-| Commit `cases/` to git | Add `cases/` to `.gitignore` |
-
----
-
-## 15. `.gitignore` Recommendations
-
-```
-# Generated case directories (large)
-cases/
-
-# OpenFOAM processor directories
-processor*/
-
-# Large result files
-*.foam
-*.vtu
-*.vtk
-
-# Python
-__pycache__/
-*.pyc
-.ipynb_checkpoints/
-
-# Environment
-.venv/
-.env
-
-# OS
-.DS_Store
-```
-
----
-
-## 16. Quick Reference — Key Commands
-
-```bash
-# Set up / activate the environment
-uv venv && uv pip install -r requirements.txt
-source .venv/bin/activate      # or prefix commands with `uv run`
-
-# Source OpenFOAM 12
-source /opt/openfoam12/etc/bashrc
-
-# Check OpenFOAM version
-foamVersion
-
-# Syntax help
-foamInfo forceCoeffs
-foamInfo SpalartAllmaras
-foamInfo kOmegaSST
-foamInfo kkLOmega
-foamSearch $FOAM_TUTORIALS liftDir
-
-# Per-regime tutorial anchors
-ls $FOAM_TUTORIALS/incompressibleFluid/airFoil2D/                # A, D, B baseline
-ls $FOAM_TUTORIALS/fluid/aerofoilNACA0012Steady/                 # B reference
-
-# Run pipeline stages
-python scripts/01_generate_doe.py
-python scripts/02_classify_regime.py        # utility module
-python scripts/03_generate_geometry.py
-python scripts/04_generate_mesh.py
-python scripts/05_prepare_case.py
-python scripts/06_run_cfd.py
-python scripts/07_harvest_results.py
-python scripts/08_validate_regimes.py
-python scripts/09_train_surrogates.py
-python scripts/10_global_validation.py
-
-# Parallel CFD execution
-parallel -j 4 "cd {1} && source /opt/openfoam12/etc/bashrc && foamRun > log.foamRun 2>&1" ::: cases/case_*/
-
-# Mesh quality
-cd cases/case_0000 && checkMesh
-
-# Monitor a running case
-tail -f cases/case_0000/log.foamRun
-```
