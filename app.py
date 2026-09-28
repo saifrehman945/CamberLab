@@ -19,14 +19,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.airfrans.geometry import naca_coordinates, parse_naca  # noqa: E402
-from scripts.surrogate.data import load_dataset, task_frames  # noqa: E402
 from scripts.surrogate.inference import load_envelope, naca_features, predict_curve  # noqa: E402
 from scripts.surrogate.models import FAMILIES, FAMILY_LABELS  # noqa: E402
 
 RESULTS_DIR = PROJECT_ROOT / "results"
 METRICS_PATH = RESULTS_DIR / "airfrans_metrics.csv"
 TASK = "full"
-N_NEAREST = 25
 
 SERIES = "#2a78d6"
 SERIES_BAND = "rgba(42, 120, 214, 0.16)"
@@ -36,12 +34,6 @@ INK_SECONDARY = "#52514e"
 GRID = "#e4e3df"
 
 st.set_page_config(page_title="CamberLab", layout="wide")
-
-
-@st.cache_data(show_spinner=False)
-def load_training() -> pd.DataFrame:
-    train, _ = task_frames(TASK, load_dataset())
-    return train
 
 
 @st.cache_data(show_spinner=False)
@@ -80,19 +72,7 @@ def style_plot(fig: go.Figure, x_title: str, y_title: str, title: str, height: i
     return fig
 
 
-def nearest_training(train: pd.DataFrame, re: float, naca: str, k: int = N_NEAREST) -> pd.DataFrame:
-    """Training cases closest in (log Re, section geometry), ignoring α."""
-    geo = naca_features(naca)
-    cols = ["log10_Re", "t_max", "m_max", "x_m"]
-    q = np.array([np.log10(re), geo["t_max"], geo["m_max"], geo["x_m"]])
-    Z = train[cols].to_numpy()
-    scale = Z.std(axis=0)
-    d = np.sqrt((((Z - q) / scale) ** 2).sum(axis=1))
-    return train.assign(distance=d).nsmallest(k, "distance")
-
-
-def curve_figure(df: pd.DataFrame, y: str, title: str, y_title: str, near: pd.DataFrame | None,
-                 family: str) -> go.Figure:
+def curve_figure(df: pd.DataFrame, y: str, title: str, y_title: str, family: str) -> go.Figure:
     fig = go.Figure()
     lo, hi = f"{y}_lo", f"{y}_hi"
     if lo in df:
@@ -103,15 +83,6 @@ def curve_figure(df: pd.DataFrame, y: str, title: str, y_title: str, near: pd.Da
     fig.add_trace(go.Scatter(x=df.alpha_deg, y=df[y], mode="lines", line=dict(color=SERIES, width=2.5),
                              name=f"{FAMILY_LABELS[family]} surrogate",
                              hovertemplate=f"α %{{x:.2f}}°<br>{y_title} %{{y:.5g}}<extra></extra>"))
-    if near is not None and y in near:
-        fig.add_trace(go.Scatter(
-            x=near.alpha_deg, y=near[y], mode="markers",
-            marker=dict(size=8, color="#ffffff", line=dict(color=TRAINING, width=2)),
-            name=f"{len(near)} nearest training cases (similar Re & section)",
-            customdata=np.column_stack([near.sample_id, near.Re / 1e6, near.t_max, near.m_max]),
-            hovertemplate=("sample %{customdata[0]:.0f}<br>α %{x:.2f}°, Re %{customdata[1]:.2f}e6<br>"
-                           "t %{customdata[2]:.3f}, m %{customdata[3]:.4f}<br>" + y_title +
-                           " %{y:.5g}<extra></extra>")))
     return style_plot(fig, "Angle of attack (deg)", y_title, title)
 
 
@@ -145,7 +116,6 @@ def model_error_note(metrics: pd.DataFrame, family: str) -> list[str]:
 # --------------------------------------------------------------------------
 
 envelope = load_envelope(TASK)["envelope"]
-train = load_training()
 metrics = load_metrics()
 
 st.title("CamberLab")
@@ -202,18 +172,14 @@ kpi[3].metric("Min Cd in sweep", f"{df.Cd.min():.5f}")
 zero = np.interp(0.0, df.Cl, df.alpha_deg) if df.Cl.min() < 0 < df.Cl.max() else np.nan
 kpi[4].metric("Zero-lift α", "—" if np.isnan(zero) else f"{zero:.2f}°")
 
-near = nearest_training(train, re, code)
 c1, c2 = st.columns(2)
-c1.plotly_chart(curve_figure(df, "Cl", "Lift curve", "Cl", near, family), width="stretch")
-c2.plotly_chart(curve_figure(df, "Cd", "Drag curve", "Cd", near, family), width="stretch")
+c1.plotly_chart(curve_figure(df, "Cl", "Lift curve", "Cl", family), width="stretch")
+c2.plotly_chart(curve_figure(df, "Cd", "Drag curve", "Cd", family), width="stretch")
 c3, c4 = st.columns(2)
 c3.plotly_chart(polar_figure(df), width="stretch")
-c4.plotly_chart(curve_figure(df, "L_over_D", "Efficiency", "L/D", None, family), width="stretch")
+c4.plotly_chart(curve_figure(df, "L_over_D", "Efficiency", "L/D", family), width="stretch")
 if family not in ("gp", "krg"):
     st.caption("Uncertainty bands are shown for the GP and KRG families only.")
-st.caption(f"Orange circles: the {N_NEAREST} training cases nearest in Re and section geometry. "
-           "They are different sections at different Re, shown for context, not as ground truth "
-           "for this query.")
 
 st.subheader("Model error context")
 for line in model_error_note(metrics, family):

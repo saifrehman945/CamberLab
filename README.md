@@ -45,7 +45,7 @@ drag with Spearman ρ_D ≈ 0.98, where the paper's best field model reaches 0.2
 - **Benchmarked like-for-like** on the four official AirfRANS tasks (`full`,
   `scarce`, `reynolds`, `aoa`) with the paper's metrics.
 - **Interactive app**: Cl–α, Cd–α, drag polar and L/D sweeps, section
-  preview, GP ±2σ bands, and the nearest training cases overlaid.
+  preview and GP ±2σ uncertainty bands.
 
 ## Quickstart
 
