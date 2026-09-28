@@ -1,433 +1,141 @@
 """
 Module: scripts/surrogate/inference.py
-Purpose: OOD/validity gating and prediction against the persisted surrogate
-         models. A query point is rejected — never silently extrapolated —
-         if it names or classifies into a regime with no trained model, or
-         falls outside that regime's ACHIEVED training envelope.
+Purpose: Query the persisted AirfRANS surrogates at (α, Re, NACA code).
+
+Geometry features come from the same functions used at ingestion
+(scripts.airfrans.geometry.naca_coordinates + section_features), so query
+features are computed exactly like training features. Queries outside the
+training envelope still get a prediction, always with a warning — never
+silently, never refused.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from functools import lru_cache
-from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
 
-from scripts.mesh.regime_parameters import classify_regime
-from scripts.surrogate.data import MODELS_DIR, REGIMES, build_feature_frame
-from scripts.surrogate.regime_bounds import load_regime_bounds
+from scripts.airfrans.geometry import naca_coordinates, parse_naca, section_features
+from scripts.surrogate.data import FEATURES, MODELS_DIR, TASKS
+from scripts.surrogate.models import FAMILIES, predict as model_predict
 
 log = logging.getLogger(__name__)
 
-FAMILIES = ["gp", "rf", "mlp", "krg"]
-TARGETS = ["Cl", "Cd"]
-
-# --- Inference-time regime blending (partition of unity) ---------------------
-# Adjacent regimes trained on different CFD templates (e.g. A at y+~30 and D at
-# y+~50) disagree by a few percent where their achieved envelopes overlap. A
-# hard classifier (CLAUDE.md §11) flips between them at a sharp boundary, which
-# shows up as a step in a Cl-alpha / Cd-alpha curve that crosses the boundary.
-#
-# Instead of picking one regime per point, we blend the per-regime expert models
-# with weights that vary smoothly across the overlap: each regime's weight
-# ramps to zero (with zero slope) as the query approaches that regime's own
-# envelope boundary, so the blended prediction is C1-continuous everywhere and
-# never uses a model outside the envelope it was trained on.
-#
-# Blending is confined to VALIDATED regimes. Unvalidated regimes (e.g. C, which
-# converges only weakly and is physically distinct — transitional low-Re, with a
-# Reynolds-number gap between its envelope and A/D's) are never averaged into a
-# validated prediction; they keep the single-model, warn-only path. In practice
-# C's envelope does not overlap A/D at all, so it would never blend regardless —
-# the validated-only rule just makes that policy explicit rather than incidental.
-BLEND_FRAC = 0.5  # ramp completes this fraction of each envelope half-width from the edge
+UNCERTAINTY_FAMILIES = {"gp", "krg"}   # families with a posterior standard deviation
+NEAR_STALL_ALPHA = 12.0                # steady RANS is least reliable above this
+# Slack on the train min/max before a query counts as out of envelope, so the nominal
+# AirfRANS edges (α −5°/15°, Re 2e6/6e6) do not trip warnings a hair outside the samples.
+ALPHA_TOL_DEG = 0.1
+RE_TOL_REL = 0.02
 
 
-class OutOfDistributionError(ValueError):
-    """Raised when a query point cannot be trusted: untrained regime, or
-    outside that regime's actual trained envelope."""
-
-
-def validate_and_classify(
-    alpha_deg: float,
-    Re: float,
-    thickness: float,
-    regime: str | None = None,
-    bounds: dict | None = None,
-) -> str:
-    """Resolve the regime for a query point and enforce the validity gate.
-
-    Returns the resolved regime label on success; raises OutOfDistribution
-    Error otherwise. `regime`, if given, is an explicit caller assertion
-    (still validated against known labels and against trained bounds) rather
-    than a shortcut around classify_regime().
-    """
-    bounds = bounds if bounds is not None else load_regime_bounds()
-
-    if regime is not None:
-        if regime not in REGIMES:
-            raise OutOfDistributionError(f"Unknown regime label {regime!r}; must be one of {REGIMES}")
-        resolved = regime
-    else:
-        resolved = classify_regime(alpha_deg, Re, thickness)
-
-    if resolved not in bounds:
-        raise OutOfDistributionError(
-            f"Point classifies as regime {resolved}, but no trained model exists for "
-            f"that regime yet (trained regimes: {sorted(bounds)}). Re-run "
-            f"07_harvest_results.py + 09_train_surrogates.py once regime {resolved} "
-            f"CFD data is available."
-        )
-
-    box = bounds[resolved]
-    for name, val in (("alpha_deg", alpha_deg), ("Re", Re), ("thickness", thickness)):
-        lo, hi = box[name]
-        if not (lo <= val <= hi):
-            raise OutOfDistributionError(
-                f"{name}={val} outside regime {resolved}'s TRAINED envelope "
-                f"[{lo}, {hi}] (n_train={box['n_train']}). Not extrapolating."
-            )
-
-    # Unvalidated regime (trained on CFD cases that failed the convergence gate):
-    # return a prediction but flag it as low-confidence. Never a rejection.
-    if not box.get("validated", True):
-        log.warning(
-            "Regime %s is UNVALIDATED: its surrogate was trained on CFD cases that "
-            "failed the convergence gate (weak/oscillating convergence). The %s "
-            "prediction is returned but should be treated as low-confidence.",
-            resolved, resolved,
-        )
-    return resolved
+@lru_cache(maxsize=256)
+def naca_features(naca: str) -> dict:
+    """Scalar geometry features of an analytic NACA section (cached per code)."""
+    f = section_features(naca_coordinates(naca))
+    return {k: float(f[k]) for k in ("t_max", "x_tmax", "m_max", "x_m")}
 
 
 @lru_cache(maxsize=None)
-def _load_joblib(path_str: str):
-    return joblib.load(path_str)
+def _load(task: str, name: str):
+    return joblib.load(MODELS_DIR / task / f"{name}.joblib")
 
 
-def _predict_one(model, family: str, X_proc: np.ndarray) -> float:
-    if family == "krg":
-        return float(model.predict_values(np.asarray(X_proc))[0, 0])
-    return float(model.predict(X_proc)[0])
+@lru_cache(maxsize=None)
+def load_envelope(task: str = "full") -> dict:
+    return json.loads((MODELS_DIR / task / "envelope.json").read_text())
 
 
-def _predict_one_with_std(model, family: str, X_proc: np.ndarray) -> tuple[float, float | None]:
-    """Return model mean plus an uncertainty proxy when the family exposes one."""
-    if family == "gp":
-        mean, std = model.predict(X_proc, return_std=True)
-        return float(mean[0]), float(std[0])
-    if family == "rf" and hasattr(model, "estimators_"):
-        preds = np.asarray([est.predict(X_proc)[0] for est in model.estimators_], dtype=float)
-        return float(preds.mean()), float(preds.std(ddof=1)) if len(preds) > 1 else 0.0
-    if family == "krg":
-        mean = float(model.predict_values(np.asarray(X_proc))[0, 0])
-        if hasattr(model, "predict_variances"):
-            var = float(model.predict_variances(np.asarray(X_proc))[0, 0])
-            return mean, float(np.sqrt(max(var, 0.0)))
-        return mean, None
-    return _predict_one(model, family, X_proc), None
-
-
-def _build_query(alpha_deg: float, Re: float, thickness: float, resolved: str) -> pd.DataFrame:
-    return build_feature_frame(
-        pd.DataFrame([{"alpha_deg": alpha_deg, "Re": Re, "thickness": thickness, "regime": resolved}])
-    )
-
-
-def predict(
-    alpha_deg: float,
-    Re: float,
-    thickness: float,
-    family: str = "gp",
-    target: str = "Cl",
-    regime: str | None = None,
-    models_dir: Path = MODELS_DIR,
-) -> float:
+def _check(task: str, family: str) -> None:
+    if task not in TASKS:
+        raise ValueError(f"unknown task {task!r}; expected one of {TASKS}")
     if family not in FAMILIES:
-        raise ValueError(f"Unknown family {family!r}; must be one of {FAMILIES}")
-    if target not in TARGETS:
-        raise ValueError(f"Unknown target {target!r}; must be one of {TARGETS}")
-
-    bounds = load_regime_bounds(models_dir / "regime_bounds.json")
-    resolved = validate_and_classify(alpha_deg, Re, thickness, regime, bounds)
-
-    preproc = _load_joblib(str(models_dir / "preprocessor.joblib"))
-    model = _load_joblib(str(models_dir / f"{family}_{target}.joblib"))
-    X_proc = preproc.transform(_build_query(alpha_deg, Re, thickness, resolved))
-    return _predict_one(model, family, X_proc)
+        raise ValueError(f"unknown family {family!r}; expected one of {FAMILIES}")
 
 
-def predict_all(
-    alpha_deg: float,
-    Re: float,
-    thickness: float,
-    regime: str | None = None,
-    models_dir: Path = MODELS_DIR,
-) -> dict:
-    """Single validation call, all 4 families x 2 targets."""
-    bounds = load_regime_bounds(models_dir / "regime_bounds.json")
-    resolved = validate_and_classify(alpha_deg, Re, thickness, regime, bounds)
-
-    preproc = _load_joblib(str(models_dir / "preprocessor.joblib"))
-    X_proc = preproc.transform(_build_query(alpha_deg, Re, thickness, resolved))
-
-    results: dict[str, dict[str, float]] = {family: {} for family in FAMILIES}
-    for family in FAMILIES:
-        for target in TARGETS:
-            model = _load_joblib(str(models_dir / f"{family}_{target}.joblib"))
-            results[family][target] = _predict_one(model, family, X_proc)
-    return results
+def feature_frame(alpha_deg, Re: float, naca: str) -> pd.DataFrame:
+    alpha = np.atleast_1d(np.asarray(alpha_deg, dtype=np.float64))
+    geo = naca_features(parse_naca(naca)["code"])
+    return pd.DataFrame({"alpha_deg": alpha, "log10_Re": np.log10(Re), **geo})[FEATURES]
 
 
-def _smoothstep(t: float) -> float:
-    """Hermite smoothstep on [0, 1] (zero slope at both ends); clamped outside."""
-    if t <= 0.0:
-        return 0.0
-    if t >= 1.0:
-        return 1.0
-    return t * t * (3.0 - 2.0 * t)
+def envelope_warnings(X: pd.DataFrame, Re: float, naca: str, task: str) -> list[str]:
+    env = load_envelope(task)["envelope"]
+    warnings = []
+    lo, hi = env["Re"]
+    if not lo * (1 - RE_TOL_REL) <= Re <= hi * (1 + RE_TOL_REL):
+        warnings.append(f"Re = {Re:.3g} is outside the training range [{lo:.3g}, {hi:.3g}]")
+    a_lo, a_hi = env["alpha_deg"]
+    a = X["alpha_deg"]
+    if (a < a_lo - ALPHA_TOL_DEG).any() or (a > a_hi + ALPHA_TOL_DEG).any():
+        warnings.append(f"α outside the training range [{a_lo:.2f}°, {a_hi:.2f}°]")
+    for f in ("t_max", "x_tmax", "m_max", "x_m"):
+        v = float(X[f].iloc[0])
+        f_lo, f_hi = env[f]
+        if not f_lo <= v <= f_hi:
+            warnings.append(f"NACA {naca}: {f} = {v:.4f} is outside the training range "
+                            f"[{f_lo:.4f}, {f_hi:.4f}]")
+    if (a > NEAR_STALL_ALPHA).any():
+        warnings.append(f"α > {NEAR_STALL_ALPHA:g}°: steady RANS near stall is the least reliable "
+                        "part of the training data")
+    return warnings
 
 
-def blend_weights(
-    alpha_deg: float,
-    Re: float,
-    thickness: float,
-    bounds: dict | None = None,
-    blend_frac: float = BLEND_FRAC,
-) -> dict[str, float]:
-    """Partition-of-unity weights over the VALIDATED regimes that contain the point.
+def predict_curve(alpha_deg, Re: float, naca: str, family: str = "gp", task: str = "full") -> pd.DataFrame:
+    """Vectorised prediction over an array of α at fixed Re and section.
 
-    A regime participates only if the query lies inside its achieved envelope on
-    every dimension (never extrapolate an expert model). Its raw weight is the
-    product over dimensions of smoothstep(margin / (blend_frac * half_width)),
-    where `margin` is the distance to the nearest edge on that dimension — so the
-    weight is 1 deep in the interior and decays to 0 (smoothly) at any boundary.
-    Weights are normalised to sum to 1. Returns {} when no validated regime
-    contains the point (the caller then falls back to the single-model gate).
+    Columns: alpha_deg, Cl, Cd, L_over_D, Cl_std, Cd_std, and for families with
+    a posterior σ also Cl_lo/Cl_hi and Cd_lo/Cd_hi (±2σ; the Cd band is
+    exp(log Cd ± 2σ), so it is asymmetric). Cd_std is the delta-method
+    Cd·σ(log Cd). Attribute `warnings` lists envelope issues.
     """
-    bounds = bounds if bounds is not None else load_regime_bounds()
-    dims = (("alpha_deg", alpha_deg), ("Re", Re), ("thickness", thickness))
-
-    raw: dict[str, float] = {}
-    for regime, box in bounds.items():
-        if not box.get("validated", True):
-            continue  # unvalidated regimes never blend into a validated prediction
-        weight = 1.0
-        contained = True
-        for name, val in dims:
-            lo, hi = box[name]
-            if not (lo <= val <= hi):
-                contained = False
-                break
-            half = 0.5 * (hi - lo)
-            if half <= 0.0:
-                factor = 1.0
-            else:
-                margin = min(val - lo, hi - val)
-                factor = _smoothstep(margin / (blend_frac * half))
-            weight *= factor
-        if contained and weight > 0.0:
-            raw[regime] = weight
-
-    total = sum(raw.values())
-    if total <= 0.0:
-        return {}
-    return {regime: w / total for regime, w in raw.items()}
+    _check(task, family)
+    X_df = feature_frame(alpha_deg, Re, naca)
+    X = _load(task, "preprocessor").transform(X_df)
+    out = pd.DataFrame({"alpha_deg": X_df["alpha_deg"].to_numpy()})
+    for target in ("Cl", "Cd"):
+        mean, std = model_predict(_load(task, f"{family}_{target}"), family, X, return_std=True)
+        if family not in UNCERTAINTY_FAMILIES:
+            std = None
+        if target == "Cl":
+            out["Cl"] = mean
+            out["Cl_std"] = std if std is not None else np.nan
+            if std is not None:
+                out["Cl_lo"], out["Cl_hi"] = mean - 2 * std, mean + 2 * std
+        else:
+            cd = np.exp(mean)
+            out["Cd"] = cd
+            out["Cd_std"] = cd * std if std is not None else np.nan
+            if std is not None:
+                out["Cd_lo"], out["Cd_hi"] = np.exp(mean - 2 * std), np.exp(mean + 2 * std)
+    out["L_over_D"] = out["Cl"] / out["Cd"]
+    out.attrs["warnings"] = envelope_warnings(X_df, Re, parse_naca(naca)["code"], task)
+    return out
 
 
-def resolve_weights(
-    alpha_deg: float,
-    Re: float,
-    thickness: float,
-    bounds: dict | None = None,
-) -> dict[str, float]:
-    """Regime weights for a query in auto (unpinned) mode.
+def predict(alpha_deg: float, Re: float, naca: str, family: str = "gp", task: str = "full") -> dict:
+    """Single-point prediction.
 
-    Returns a multi-regime blend when validated envelopes overlap at the point;
-    otherwise defers to the strict single-regime gate — which resolves C (with a
-    low-confidence warning), and raises OutOfDistributionError for untrained
-    regimes or points outside every trained envelope. The single case is returned
-    as a degenerate {regime: 1.0} weighting so callers have one code path.
+    Returns {Cl, Cd, L_over_D, Cl_std, Cd_std, in_envelope, warnings}. Cl_std
+    and Cd_std are None for families without a posterior σ (RF, MLP).
     """
-    bounds = bounds if bounds is not None else load_regime_bounds()
-    weights = blend_weights(alpha_deg, Re, thickness, bounds)
-    if weights:
-        return weights
-    resolved = validate_and_classify(alpha_deg, Re, thickness, None, bounds)
-    return {resolved: 1.0}
-
-
-def predict_blended(
-    alpha_deg: float,
-    Re: float,
-    thickness: float,
-    family: str = "gp",
-    target: str = "Cl",
-    models_dir: Path = MODELS_DIR,
-    weights: dict[str, float] | None = None,
-) -> float:
-    """Auto-mode prediction: partition-of-unity blend across overlapping regimes.
-
-    Continuous across regime boundaries, unlike the hard-classified `predict`.
-    Pass `weights` (from `resolve_weights`) to reuse a precomputed weighting and
-    avoid re-running the gate; otherwise it is computed here.
-    """
-    if family not in FAMILIES:
-        raise ValueError(f"Unknown family {family!r}; must be one of {FAMILIES}")
-    if target not in TARGETS:
-        raise ValueError(f"Unknown target {target!r}; must be one of {TARGETS}")
-
-    if weights is None:
-        bounds = load_regime_bounds(models_dir / "regime_bounds.json")
-        weights = resolve_weights(alpha_deg, Re, thickness, bounds)
-
-    preproc = _load_joblib(str(models_dir / "preprocessor.joblib"))
-    model = _load_joblib(str(models_dir / f"{family}_{target}.joblib"))
-
-    value = 0.0
-    for regime, w in weights.items():
-        X_proc = preproc.transform(_build_query(alpha_deg, Re, thickness, regime))
-        value += w * _predict_one(model, family, X_proc)
-    return value
-
-
-def predict_all_blended(
-    alpha_deg: float,
-    Re: float,
-    thickness: float,
-    models_dir: Path = MODELS_DIR,
-) -> dict:
-    """Auto-mode blend for all 4 families x 2 targets, plus the regime weighting.
-
-    Returns {"weights": {regime: w}, "predictions": {family: {target: value}}}.
-    """
-    bounds = load_regime_bounds(models_dir / "regime_bounds.json")
-    weights = resolve_weights(alpha_deg, Re, thickness, bounds)
-
-    preproc = _load_joblib(str(models_dir / "preprocessor.joblib"))
-    x_by_regime = {
-        regime: preproc.transform(_build_query(alpha_deg, Re, thickness, regime))
-        for regime in weights
+    row = predict_curve([alpha_deg], Re, naca, family, task)
+    r = row.iloc[0]
+    warnings = row.attrs["warnings"]
+    in_envelope = not any("outside" in w for w in warnings)
+    for w in warnings:
+        log.warning("NACA %s, α=%.2f°, Re=%.3g: %s", naca, alpha_deg, Re, w)
+    return {
+        "Cl": float(r.Cl), "Cd": float(r.Cd), "L_over_D": float(r.L_over_D),
+        "Cl_std": None if np.isnan(r.Cl_std) else float(r.Cl_std),
+        "Cd_std": None if np.isnan(r.Cd_std) else float(r.Cd_std),
+        "in_envelope": in_envelope, "warnings": warnings,
     }
 
-    predictions: dict[str, dict[str, float]] = {family: {} for family in FAMILIES}
-    for family in FAMILIES:
-        for target in TARGETS:
-            model = _load_joblib(str(models_dir / f"{family}_{target}.joblib"))
-            predictions[family][target] = sum(
-                w * _predict_one(model, family, x_by_regime[regime])
-                for regime, w in weights.items()
-            )
-    return {"weights": weights, "predictions": predictions}
 
-
-def predict_with_uncertainty(
-    alpha_deg: float,
-    Re: float,
-    thickness: float,
-    family: str = "gp",
-    target: str = "Cl",
-    regime: str | None = None,
-    models_dir: Path = MODELS_DIR,
-) -> dict:
-    """Strict single-regime prediction with an uncertainty proxy.
-
-    Returns a dict with keys: value, std, regime, status. This keeps the legacy
-    `predict` API unchanged while giving UI callers enough metadata to label
-    low-confidence regimes.
-    """
-    if family not in FAMILIES:
-        raise ValueError(f"Unknown family {family!r}; must be one of {FAMILIES}")
-    if target not in TARGETS:
-        raise ValueError(f"Unknown target {target!r}; must be one of {TARGETS}")
-
-    bounds = load_regime_bounds(models_dir / "regime_bounds.json")
-    resolved = validate_and_classify(alpha_deg, Re, thickness, regime, bounds)
-
-    preproc = _load_joblib(str(models_dir / "preprocessor.joblib"))
-    model = _load_joblib(str(models_dir / f"{family}_{target}.joblib"))
-    X_proc = preproc.transform(_build_query(alpha_deg, Re, thickness, resolved))
-    value, std = _predict_one_with_std(model, family, X_proc)
-    status = "validated" if bounds[resolved].get("validated", True) else "unvalidated"
-    return {"value": value, "std": std, "regime": resolved, "status": status}
-
-
-def predict_blended_with_uncertainty(
-    alpha_deg: float,
-    Re: float,
-    thickness: float,
-    family: str = "gp",
-    target: str = "Cl",
-    models_dir: Path = MODELS_DIR,
-    weights: dict[str, float] | None = None,
-) -> dict:
-    """Auto-mode blended prediction with combined uncertainty proxy."""
-    if family not in FAMILIES:
-        raise ValueError(f"Unknown family {family!r}; must be one of {FAMILIES}")
-    if target not in TARGETS:
-        raise ValueError(f"Unknown target {target!r}; must be one of {TARGETS}")
-
-    bounds = load_regime_bounds(models_dir / "regime_bounds.json")
-    if weights is None:
-        weights = resolve_weights(alpha_deg, Re, thickness, bounds)
-
-    preproc = _load_joblib(str(models_dir / "preprocessor.joblib"))
-    model = _load_joblib(str(models_dir / f"{family}_{target}.joblib"))
-
-    means: dict[str, float] = {}
-    stds: dict[str, float | None] = {}
-    for resolved in weights:
-        X_proc = preproc.transform(_build_query(alpha_deg, Re, thickness, resolved))
-        means[resolved], stds[resolved] = _predict_one_with_std(model, family, X_proc)
-
-    value = sum(weights[r] * means[r] for r in weights)
-    if all(stds[r] is not None for r in weights):
-        second_moment = sum(weights[r] * (float(stds[r]) ** 2 + means[r] ** 2) for r in weights)
-        std = float(np.sqrt(max(second_moment - value ** 2, 0.0)))
-    else:
-        std = None
-
-    if len(weights) == 1:
-        resolved = next(iter(weights))
-        status = "validated" if bounds[resolved].get("validated", True) else "unvalidated"
-    else:
-        status = "blended"
-    return {"value": value, "std": std, "weights": weights, "status": status}
-
-
-def predict_untrained_regime_extrapolated(
-    alpha_deg: float,
-    Re: float,
-    thickness: float,
-    regime: str,
-    family: str = "gp",
-    target: str = "Cl",
-    models_dir: Path = MODELS_DIR,
-) -> dict:
-    """Evaluate the persisted global model with an untrained regime one-hot.
-
-    This is intentionally separate from strict inference. It exists for UI-only
-    exploratory curves while a regime has no CFD training rows yet; callers must
-    label the result as extrapolated.
-    """
-    if regime not in REGIMES:
-        raise OutOfDistributionError(f"Unknown regime label {regime!r}; must be one of {REGIMES}")
-    if family not in FAMILIES:
-        raise ValueError(f"Unknown family {family!r}; must be one of {FAMILIES}")
-    if target not in TARGETS:
-        raise ValueError(f"Unknown target {target!r}; must be one of {TARGETS}")
-
-    bounds = load_regime_bounds(models_dir / "regime_bounds.json")
-    if regime in bounds:
-        raise OutOfDistributionError(
-            f"Regime {regime} is trained; use strict prediction instead of app-only extrapolation."
-        )
-
-    preproc = _load_joblib(str(models_dir / "preprocessor.joblib"))
-    model = _load_joblib(str(models_dir / f"{family}_{target}.joblib"))
-    X_proc = preproc.transform(_build_query(alpha_deg, Re, thickness, regime))
-    value, std = _predict_one_with_std(model, family, X_proc)
-    return {"value": value, "std": std, "regime": regime, "status": "extrapolated"}
+def predict_all(alpha_deg: float, Re: float, naca: str, task: str = "full") -> dict[str, dict]:
+    return {family: predict(alpha_deg, Re, naca, family, task) for family in FAMILIES}

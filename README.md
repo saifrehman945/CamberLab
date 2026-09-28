@@ -1,315 +1,232 @@
 <h1 align="center">CamberLab</h1>
 
 <p align="center">
-  <strong>A flow-physics-aware CFD surrogate for NACA 4-digit aerofoils</strong>
+  <strong>Millisecond lift and drag predictions for NACA 4- and 5-digit aerofoils, trained on AirfRANS</strong>
 </p>
 
 <p align="center">
   <a href="#license"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776ab.svg">
   <img alt="Managed with uv" src="https://img.shields.io/badge/env-uv-de5fe9.svg">
-  <img alt="OpenFOAM 12" src="https://img.shields.io/badge/OpenFOAM-12-orange.svg">
+  <img alt="Data: AirfRANS (ODbL)" src="https://img.shields.io/badge/data-AirfRANS%20(ODbL)-2a78d6.svg">
   <img alt="Streamlit" src="https://img.shields.io/badge/app-Streamlit-ff4b4b.svg">
-  <img alt="Status: research preview" src="https://img.shields.io/badge/status-research%20preview-yellow.svg">
 </p>
 
 ---
 
-CamberLab replaces minutes-to-hours of OpenFOAM RANS simulation with millisecond
-surrogate evaluation:
+CamberLab replaces a ~25-minute steady RANS simulation with a surrogate call
+that takes milliseconds:
 
 ```text
-(angle of attack, Reynolds number, thickness, flow physics) → (Cl, Cd, L/D)
+(angle of attack, Reynolds number, NACA section) → (Cl, Cd, L/D)
 ```
 
-Live Demo : <https:/camberlab.streamlit.app/>
+Live demo: <https://camberlab.streamlit.app/>
 
-The core idea is that **one CFD recipe cannot cover the whole design space**.
-Attached turbulent flow, near-stall separation, transitional low-Reynolds flow,
-and fully turbulent high-Reynolds flow are governed by different physics and need
-different turbulence models, wall treatments, y+ targets, and meshes. CamberLab
-partitions the design space into four flow-physics ranges, validates a dedicated
-CFD template for each, then merges the samples into one dataset with the
-flow-physics class as an explicit surrogate input.
-
-Every prediction the app makes is labelled with the confidence the underlying CFD
-data actually supports — trained and validated, trained but unvalidated, or
-extrapolated.
-
-## Application
-
-![CamberLab dashboard — inputs, aerofoil preview, and Cl/Cd sweeps](docs/images/app-overview.png)
-*Dashboard: geometry preview, flow-physics classification, and Cl/Cd vs α* 
+The surrogates are trained on **AirfRANS** (Bonnet et al., NeurIPS 2022):
+1,000 steady 2D incompressible RANS simulations (OpenFOAM, k-ω SST) of NACA 4-
+and 5-digit aerofoils at Re 2–6×10⁶ and α −5° to 15°. Unlike the AirfRANS
+paper's baselines, which predict the whole flow field and integrate forces
+from it, CamberLab regresses the force coefficients directly. That makes drag
+prediction far more accurate: on the paper's own test sets, CamberLab ranks
+drag with Spearman ρ_D ≈ 0.98, where the paper's best field model reaches 0.25.
 
 ## Features
 
-- **Regime-aware CFD pipeline** — four OpenFOAM 12 templates (Spalart–Allmaras,
-  k-ω SST, k-kL-ω), each with its own mesh strategy and y+ target.
-- **Reference-validated setups** — per-regime probes against Abbott & von
-  Doenhoff, NASA Turbulence Modeling Resource, Ladson, and XFOIL data before any
-  regime contributes training samples.
-- **Four surrogate families** — Gaussian Process, Random Forest, MLP, and Kriging
-  (SMT), each fitted for both Cl and Cd, with per-regime metrics reported
-  alongside global ones.
-- **Honest uncertainty** — GP/Kriging variance where available, plus explicit
-  banners for unvalidated or untrained regions rather than silent extrapolation.
-- **Interactive Streamlit app** — α sweeps, drag polars, L/D, NACA 4-digit
-  geometry preview, model-family switching, and CFD training points overlaid on
-  the surrogate curves.
-- **Artifact-only inference** — the app and CLI read committed `models/` and
-  `results/` artifacts; raw OpenFOAM case directories are never required.
-- **Reproducible by construction** — `random_state = 42` everywhere, DOE and
-  train/test indices frozen at generation time and never rewritten.
+- **Any NACA 4- or 5-digit section** (standard and reflex 5-digit mean lines).
+  Geometry features are computed by the same code from the CFD mesh wall at
+  training time and from the analytic section at query time.
+- **Four surrogate families**: Gaussian process, random forest, MLP and
+  Kriging (SMT), each fitted for Cl and log Cd.
+- **Uncertainty where it is real.** GP and Kriging give posterior ±2σ bands;
+  GP bands cover 95–97% of held-out test points on the `full` task.
+- **Honest envelope handling.** Queries outside the training range still get a
+  prediction, always with a warning; they are never answered silently.
+- **Benchmarked like-for-like** on the four official AirfRANS tasks (`full`,
+  `scarce`, `reynolds`, `aoa`) with the paper's metrics.
+- **Interactive app**: Cl–α, Cd–α, drag polar and L/D sweeps, section
+  preview, GP ±2σ bands, and the nearest training cases overlaid.
 
 ## Quickstart
 
-### Run the app (no OpenFOAM needed)
-
-Prediction only requires the Python environment — the trained models are
-committed.
+### Run the app
 
 ```bash
 git clone https://github.com/saifrehman945/CamberLab.git
 cd CamberLab
-
-uv venv                              # .venv on Python 3.11 (see .python-version)
-uv pip install -r requirements.txt
+curl -LsSf https://astral.sh/uv/install.sh | sh    # if uv is not installed
+uv venv && uv pip install -r requirements.txt
 uv run streamlit run app.py
 ```
 
-The dashboard opens at <http://localhost:8501>.
-
-> No uv? Any pip works — `python3.11 -m venv .venv && .venv/bin/pip install -r
-> requirements.txt`. Every dependency comes from PyPI; there is no conda channel
-> and no `environment.yml`. OpenFOAM itself is *not* a Python package and is
-> installed separately (only needed to regenerate the dataset).
+The app and CLI only need the committed `models/full/` artifacts, not the dataset.
 
 ### Predict from the command line
 
 ```bash
-uv run python scripts/predict.py \
-  --alpha 4.0 --re 2.0e6 --thickness 0.12 --family gp
-# gp: Cl=0.43103  Cd=0.01225
+uv run python scripts/predict.py --alpha 4 --re 3e6 --naca 2412 --family all
+uv run python scripts/11_sweep_curves.py --naca 23012 --re 4e6     # α sweep → CSV + PNG
 ```
 
-Useful flags: `--family {gp,rf,mlp,krg,all}` to pick a model family, and
-`--regime {A,B,C,D}` to assert a flow-physics range instead of using the
-classifier. See [Project status](#project-status) before relying on `krg` or
-`mlp`.
+### Rebuild everything from the data
 
-### Run the CFD pipeline (Linux + OpenFOAM 12)
-
-Regenerating the dataset additionally needs a system-level
-[OpenFOAM 12](https://openfoam.org) (Foundation release) and GNU `parallel`:
+Download AirfRANS once (≈ 611 MB; code never downloads it for you):
 
 ```bash
-source /opt/openfoam12/etc/bashrc
-source .venv/bin/activate              # or prefix each command with `uv run`
-
-python scripts/01_doe.py               # 175-point per-regime LHS → samples.csv
-python scripts/02_geometry.py          # analytic NACA 4-digit coordinates
-python scripts/03_mesh.py              # gmsh structured C+H mesh per regime
-python scripts/04_run_cfd.py           # render template + foamRun (GNU parallel)
-python scripts/07_harvest_results.py   # convergence gate → results/dataset_clean.csv
-python scripts/08_validation.py        # per-regime validation vs reference data
-python scripts/09_train_surrogates.py  # GP / RF / MLP / KRG → models/
-python scripts/10_global_validation.py # test-set metrics, parity, Sobol, OOD
+huggingface-cli download PLAID-datasets/AirfRANS_remeshed \
+  --repo-type dataset --local-dir data/airfrans_remeshed
 ```
 
-This project targets the OpenFOAM **Foundation** fork, where `simpleFoam` is
-superseded by `foamRun -solver incompressibleFluid`. ESI (openfoam.com) syntax is
-not supported.
+Then run the pipeline (about 25 minutes on a laptop, mostly training):
+
+```bash
+uv run python scripts/airfrans/inspect_dataset.py    # checks the data (Gate 2)
+uv run python scripts/20_ingest_airfrans.py          # → results/airfrans_dataset.csv
+uv run python scripts/21_qa_airfrans.py              # → results/airfrans_qa.md
+uv run python scripts/22_make_splits.py              # official AirfRANS splits
+uv run python scripts/09_train_surrogates.py --task all
+uv run python scripts/10_global_validation.py        # → results/airfrans_benchmark.md
+uv run pytest
+```
+
+Use `--data-dir` or `AIRFRANS_DIR` if the data lives elsewhere.
 
 ## Project status
 
-CamberLab is a **research preview**. The 175-point DOE is fully defined, but not
-every flow-physics range has finished CFD and training. `results/dataset_clean.csv`,
-`results/surrogate_metrics.csv`, and `models/regime_bounds.json` are the source of
-truth for what the persisted surrogate actually supports.
+Held-out test results on the official AirfRANS `full` split (800 train / 200
+test). Relative error is the paper's `|(true − pred)/true|`; the median is
+shown because the mean blows up for Cl near zero.
 
-| Flow physics | Dataset rows | Status |
-|---|---:|---|
-| Attached turbulent (A) | 75 | Trained and validated |
-| Near-stall separated (B) | 0 | Not trained — app marks queries as extrapolation |
-| Transitional low-Re (C) | 8 | Trained, **unvalidated** (low confidence) |
-| High-Re attached (D) | 40 | Trained and validated |
+| Model | Cl R² | Cd R² | Spearman ρ_L | Spearman ρ_D | median rel. err. Cl | median rel. err. Cd |
+|---|---|---|---|---|---|---|
+| **GP** | 0.9992 | 0.9768 | 0.9995 | 0.978 | 1.07% | 0.51% |
+| **KRG** | 0.9992 | 0.9881 | 0.9995 | 0.987 | 0.92% | 0.66% |
+| **MLP** | 0.9984 | 0.9771 | 0.9990 | 0.992 | 2.00% | 1.93% |
+| **RF** | 0.9923 | 0.9498 | 0.9962 | 0.980 | 4.36% | 3.02% |
 
-Test-set R² on the 25 held-out samples (Gaussian Process, the strongest family):
+Against the paper's field models, using their corrected results (arXiv
+2212.07564 v3, Appendix N), with mean relative error expressed as a percentage:
 
-| Slice | Cl R² | Cd R² |
-|---|---:|---:|
-| Attached turbulent (A) | 0.9999 | 0.979 |
-| High-Re attached (D) | 0.9986 | 0.981 |
-| Transitional low-Re (C) | 0.633 | 0.323 |
-| Global | 0.944 | 0.425 |
+| Task | Our best ρ_D | Paper's best ρ_D | Our best mean rel. err. Cd | Paper's best mean rel. err. Cd |
+|---|---|---|---|---|
+| `full` | 0.992 (MLP) | 0.250 (MLP) | 1.5% (KRG) | 618% (MLP) |
+| `scarce` | 0.990 (MLP) | 0.254 (GraphSAGE) | 3.2% (MLP) | 454% (MLP) |
+| `reynolds` | 0.962 (MLP) | 0.192 (Graph U-Net) | 6.2% (RF) | 829% (MLP) |
+| `aoa` | 0.964 (KRG) | 0.552 (Graph U-Net) | 2.1% (GP) | 435% (MLP) |
 
-Known limitations, stated plainly:
+On lift, the paper's field models are competitive in ranking (ρ_L ≈ 0.99) but
+not in magnitude: their best mean relative Cl error is 15–38%, against 4–7%
+here. Full tables, including the paper's original numbers:
+[`results/airfrans_benchmark.md`](results/airfrans_benchmark.md). Full write-up:
+[`results/airfrans_report.md`](results/airfrans_report.md).
 
-- **Symmetric aerofoils only.** Camber can be previewed in the app but is
-  unsupported; predictions fall back to the symmetric NACA 00xx model at the
-  selected thickness.
-- **No stall.** With zero near-stall samples, anything at α ≥ 10° is
-  extrapolation and is flagged as such.
-- **Regime C is not locked.** Its NACA0012 probes miss the XFOIL reference by
-  ~15% on Cl and ~39% on Cd, well outside the ≤5% / ≤10% acceptance bars. Its
-  eight rows are included but marked low-confidence; the low global Cd R² above
-  is dominated by them.
-- **MLP Cd is unusable** (negative R² across all slices). It is kept in the
-  repository for comparison, not for use. Prefer GP for Cd.
-- **The committed Kriging artifacts do not load under SMT ≥ 2.13** — unpickling
-  raises `AttributeError: 'PowExp' object has no attribute 'theta'`. This also
-  breaks `predict.py --family all` (the CLI default), so pass an explicit
-  `--family gp|rf|mlp` until the models are retrained. No installable SMT
-  release loads them: 2.3–2.12 fail earlier still on moved modules and renamed
-  enums, so `requirements.txt` leaves `smt>=2.3.0` unpinned and retraining is
-  the only fix.
-- Missing ranges should be filled by harvesting real CFD into
-  `results/dataset_clean.csv` and retraining — never by fabricating rows.
+Known weak spot: **Cd extrapolation to lower Re.** On the `reynolds` task
+(train Re 3–5×10⁶), GP and Kriging overpredict Cd by up to 5× for a handful of
+thin, cambered sections at negative α below Re 3×10⁶. RF and MLP extrapolate
+drag more gracefully there.
 
 ## How it works
 
-### Flow regimes
+1. **Ingest.** Each AirfRANS sample stores α, U∞, C_L and C_D as scalars. The
+   aerofoil wall is recovered from the mesh as the boundary loop off the outer
+   clip box, and reduced to four section features: max thickness `t_max` and
+   its location `x_tmax`, max camber `m_max` and its location `x_m`. Re =
+   U∞·c/ν with c = 1 m and ν at 298.15 K.
+2. **QA.** Hard physical checks (0 of 1,000 rows fail), lift-slope and
+   zero-lift-angle sanity checks, leave-one-out GP outlier screening (10 rows
+   listed, none dropped), and a near-NACA0012 comparison against Ladson's
+   experiment and NASA TMR CFL3D SST. See
+   [`results/airfrans_qa.md`](results/airfrans_qa.md).
+3. **Split.** The official AirfRANS task memberships, read from the dataset
+   card, are frozen in `splits/`. Test rows are used once, for evaluation only.
+4. **Train.** Inputs `[α, log10 Re, t_max, x_tmax, m_max, x_m]` are
+   standardised. The targets are Cl and log Cd. RF leaf size and MLP
+   early-stopping patience are chosen by 5-fold CV on the training rows.
+5. **Query.** For a NACA code, the section is generated analytically (Abbott &
+   von Doenhoff) and passed through the same feature extractor, so query
+   features match training features.
 
-| ID | Name | α (°) | Re | t/c | Turbulence | Wall treatment | Target y+ | Cells |
-|---|---|---|---|---|---|---|---|---|
-| A | Attached turbulent | 0–8 | 1.5×10⁶ – 3×10⁶ | 0.10–0.18 | Spalart–Allmaras | Wall functions | 20–50 | 80k–200k |
-| B | Near-stall separated | 10–16 | 1×10⁶ – 3×10⁶ | 0.12–0.24 | k-ω SST | Fully resolved | < 1 | 300k–1M |
-| C | Transitional low-Re | 0–8 | 3×10⁵ – 1×10⁶ | 0.08–0.15 | k-kL-ω (transition) | Fully resolved | < 1 | 500k–1.2M |
-| D | High-Re attached | 0–6 | 2×10⁶ – 5×10⁶ | 0.10–0.18 | Spalart–Allmaras | Wall functions | 30–80 | 50k–150k |
+## Limitations
 
-Chord = 1.0 m, ν = 1.5×10⁻⁵ m²/s. Angle of attack is imposed by rotating the
-inlet velocity vector (and the `forceCoeffs` lift/drag directions) — never by
-rotating the mesh. The global query envelope is α ∈ [0°, 16°],
-Re ∈ [5×10⁵, 5×10⁶], t/c ∈ [0.08, 0.24].
-
-At inference time an arbitrary `(α, Re, t)` point is labelled by a
-first-match-wins priority rule (`scripts/mesh/regime_parameters.py`): α ≥ 10° → B;
-Re < 1×10⁶ → C; Re ≥ 2×10⁶ with α ≤ 6° and 0.10 ≤ t/c ≤ 0.18 → D; otherwise A.
-
-### Design of experiments
-
-Latin hypercube sampling runs independently inside each regime's bounding box
-(`pyDOE2`, `criterion='maximin'`), then the samples are concatenated. The 80/20
-split is stratified by regime so every regime appears in both halves.
-
-| Regime | N | Train | Test |
-|---|---:|---:|---:|
-| A | 80 | 64 | 16 |
-| B | 25 | 20 | 5 |
-| C | 30 | 24 | 6 |
-| D | 40 | 32 | 8 |
-| **Total** | **175** | **140** | **35** |
-
-The indices in `train_idx.npy` / `test_idx.npy` are frozen: test samples are
-never trained on, never used for hyperparameter selection, and never used to
-decide which CFD to re-run.
-
-### Surrogate models
-
-One global model per output, per family:
-
-```text
-X = [α_deg, Re, thickness, regime_A, regime_B, regime_C, regime_D]  →  Cl, Cd
-```
-
-Continuous features are standardized; the regime is one-hot encoded across four
-columns so no false ordinal relation is imposed on a categorical variable.
-
-| Family | Configuration |
-|---|---|
-| Gaussian Process | `sklearn`, `Matern(ν=2.5) + WhiteKernel`, `n_restarts_optimizer=10`, `normalize_y=True` |
-| Random Forest | `sklearn`, `n_estimators=200` |
-| MLP | `sklearn`, layers `(64, 64, 32)`, ReLU, `early_stopping=True` |
-| Kriging | `smt.surrogate_models.KRG` |
-
-Acceptance bar: per-regime R² ≥ 0.90 for Cl and ≥ 0.85 for Cd. Global R² alone is
-reported but treated as misleading, since sample-rich regimes dominate it.
-
-### CFD validation
-
-A regime contributes training samples only after its NACA0012 probes agree with
-canonical references within |ΔCl| ≤ 5% and |ΔCd| ≤ 10%, with qualitative Cp
-agreement.
-
-| Regime | Probe points | Reference |
-|---|---|---|
-| A | Re = 2×10⁶, α ∈ {0, 4, 8}; Re = 3×10⁶, α = 4 | Abbott & von Doenhoff; NASA TMR (SA) |
-| B | Re = 2×10⁶, α ∈ {12, 14, 16} | NASA TMR; AGARD experimental |
-| C | Re = 5×10⁵, α ∈ {2, 4, 6} | XFOIL with eᴺ transition; low-Re experiment |
-| D | Re = 4×10⁶, α ∈ {0, 4} | NASA TMR (SA) |
-
-Reference datasets live in `validation_data/` with a provenance manifest; results
-land in `validation/`.
+- **Envelope:** Re 2–6×10⁶, α −5° to 15°, NACA 4- and 5-digit sections only
+  (t/c ≈ 0.05–0.20, camber up to ~7%). Outside it you get a warning and an
+  extrapolation.
+- **Fully turbulent SST, no transition.** Cd is biased high against tripped or
+  free-transition experiments at the lower Re values: +10–25% vs Ladson's
+  NACA 0012 data (Re 6×10⁶) for cases at Re 2–3×10⁶, within a few percent
+  at 6×10⁶.
+- **Near stall** (α > ~12°), steady RANS is the least reliable part of the
+  data, and the surrogate inherits that.
+- **The surrogate can be no more accurate than AirfRANS' own CFD.**
+- `m_max` is measured from the geometric chord, so it reads slightly below the
+  nominal NACA camber for cambered sections. Training and queries are
+  consistent, but don't compare it one-to-one with NACA digits.
 
 ## Repository layout
 
 ```text
 CamberLab/
-├── app.py                      # Streamlit dashboard (artifact-only)
-├── requirements.txt            # pip/uv dependencies (pure PyPI)
-├── .python-version             # 3.11 — picked up by `uv venv`
-├── samples.csv                 # 175 × [case_id, alpha_deg, Re, thickness, regime]
-├── train_idx.npy, test_idx.npy # frozen stratified split
-│
+├── app.py                        # Streamlit app (reads models/full/)
 ├── scripts/
-│   ├── 01_doe.py               # per-regime LHS → samples.csv
-│   ├── 02_geometry.py          # analytic NACA 4-digit → aerofoil.dat
-│   ├── 03_mesh.py              # gmsh structured C+H mesh, regime-specific
-│   ├── 04_run_cfd.py           # render template + foamRun via GNU parallel
-│   ├── 07_harvest_results.py   # forceCoeffs parsing + convergence gate
-│   ├── 08_validation.py        # per-regime reference validation
-│   ├── 09_train_surrogates.py  # GP / RF / MLP / KRG
-│   ├── 10_global_validation.py # test-set metrics, parity, Sobol, OOD
-│   ├── 11_sweep_curves.py      # α sweeps through the trained surrogate
-│   ├── predict.py              # CLI over the inference layer
-│   ├── mesh/                   # meshing package (topology, BL, wake, quality)
-│   ├── surrogate/              # inference, data loading, regime bounds
-│   └── validation/             # reference parsing, comparison, reporting
-│
-├── openfoam_template/          # one OpenFOAM 12 case template per regime
-│   └── regime_{A,B,C,D}/       # 0/, constant/momentumTransport, system/
-│
-├── validation_data/            # published reference data + provenance manifest
-├── validation/                 # validation reports, mesh quality, summaries
-├── models/                     # preprocessor + {gp,rf,mlp,krg}_{Cl,Cd}.joblib
-├── results/                    # dataset_clean.csv, surrogate_metrics.csv, plots
-├── docs/images/                # app screenshots
-└── cases/                      # generated OpenFOAM cases (gitignored, ~GB)
+│   ├── airfrans/                 # dataset I/O, geometry, inspection, plot style
+│   ├── 20_ingest_airfrans.py     # samples → results/airfrans_dataset.csv
+│   ├── 21_qa_airfrans.py         # hard/soft QA, reference comparison
+│   ├── 22_make_splits.py         # frozen official splits → splits/
+│   ├── 09_train_surrogates.py    # GP / RF / MLP / KRG per task
+│   ├── 10_global_validation.py   # test metrics, plots, paper benchmark
+│   ├── 11_sweep_curves.py        # α sweep for one section
+│   ├── predict.py                # single-point CLI
+│   └── surrogate/                # data schema, model families, inference API
+├── models/full/                  # committed models (other tasks: regenerate)
+├── splits/                       # frozen train/test indices + provenance
+├── results/                      # dataset, QA, metrics, benchmark, figures, report
+├── validation_data/              # Ladson / NASA TMR reference data
+├── tests/                        # geometry, schema, reload, CLI, app
+├── legacy/regime_v1/             # retired regime-aware OpenFOAM pipeline
+└── data/                         # AirfRANS download (gitignored)
 ```
 
-`cases/` is deliberately untracked: meshes, fields, and logs are large and fully
-regenerable from `scripts/` + `openfoam_template/` + `samples.csv`.
+## Legacy pipeline
 
-## Roadmap
-
-- [ ] Lock Regime C — resolve the transitional Cl/Cd discrepancy vs XFOIL
-- [ ] Run and lock Regime B, giving the surrogate real near-stall support
-- [ ] Complete the full 175-case dataset and retrain
-- [ ] Extend to cambered NACA 4-digit sections (nonzero `m`, `p`)
-- [ ] Add Cp(x/c) as a surrogate output alongside the integrated coefficients
-- [ ] Pin SMT and retrain the Kriging artifacts so `--family all` works again
-- [ ] Continuous-integration smoke test for the app and inference layer
+CamberLab originally generated its own OpenFOAM 12 dataset with a four-regime
+design (per-regime turbulence models, meshes and validation). That pipeline is
+archived, with its history, in [`legacy/regime_v1/`](legacy/regime_v1/).
 
 ## Contributing
 
-Issues and pull requests are welcome. Before opening a PR, please read
-[`CLAUDE.md`](CLAUDE.md) — it is the development guide for this repo and covers
-the non-obvious constraints. The essentials:
+Issues and pull requests are welcome. Please read [`CLAUDE.md`](CLAUDE.md)
+first; it is the development guide for this repo. The essentials:
 
-- Work inside the project virtual environment (`uv venv` + `uv pip install -r
-  requirements.txt`); never system Python. New dependencies go in
-  `requirements.txt` and must be installable from PyPI.
-- Never guess OpenFOAM dictionary syntax. Verify against `$FOAM_TUTORIALS`,
-  `foamInfo <keyword>`, and `foamSearch`. OpenFOAM 12 uses
-  `constant/momentumTransport`, not `turbulenceProperties`.
-- Keep the templates per-regime; never reuse one regime's template for another.
-- Use `pathlib.Path` relative to `PROJECT_ROOT`, the `logging` module rather than
-  `print()`, `joblib` rather than `pickle`, and seed 42 for anything stochastic.
-- Do not touch the frozen test indices, and do not add dataset rows that did not
-  come from a converged, validated CFD run.
+- Work inside the uv virtual environment; dependencies come from PyPI.
+- Never edit, drop or fabricate rows of `results/airfrans_dataset.csv`. QA
+  outcomes live in `results/airfrans_qa_flags.csv`.
+- Never use test indices for fitting or tuning; use 5-fold CV on train.
+- Compute query geometry only via `naca_coordinates` + `section_features`.
+- `pathlib`, `logging`, `joblib`, seed 42.
 
-Design rationale in depth: [`README_complete.md`](README_complete.md).
+## Citation and data licence
+
+The training data is AirfRANS, © Safran, distributed under the
+[Open Database License (ODbL 1.0)](https://opendatacommons.org/licenses/odbl/1-0/)
+via [`PLAID-datasets/AirfRANS_remeshed`](https://huggingface.co/datasets/PLAID-datasets/AirfRANS_remeshed).
+If you use CamberLab's models or derived data, please cite:
+
+```bibtex
+@inproceedings{bonnet2022airfrans,
+  title     = {{AirfRANS}: High Fidelity Computational Fluid Dynamics Dataset for
+               Approximating {R}eynolds-Averaged {N}avier--{S}tokes Solutions},
+  author    = {Bonnet, Florent and Mazari, Ahmed Jocelyn and Cinnella, Paola and
+               Gallinari, Patrick},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS),
+               Datasets and Benchmarks Track},
+  year      = {2022},
+  eprint    = {2212.07564},
+  archivePrefix = {arXiv}
+}
+```
 
 ## License
 
-Released under the MIT License. See [`LICENSE`](LICENSE).
+Code is released under the MIT License. See [`LICENSE`](LICENSE). The AirfRANS
+data and databases derived from it (including `results/airfrans_dataset.csv`)
+remain under the ODbL.

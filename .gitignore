@@ -53,3 +53,13 @@ Thumbs.db
 .claude/
 .codex
 .agents
+# --- Downloaded datasets (AirfRANS; user-managed, never committed) -------
+data/
+
+# --- Surrogate artifacts ---------------------------------------------------
+# Only models/full/ (used by the app, CLI and demo) is committed. The other
+# task model sets are ~100 MB of pickles; regenerate them with
+#   uv run python scripts/09_train_surrogates.py --task all
+models/scarce/
+models/reynolds/
+models/aoa/
