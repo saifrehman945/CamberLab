@@ -1,7 +1,7 @@
-# AirfRANS_remeshed — Phase 2 inspection
+# AirfRANS clipped — dataset inspection (Gate 2)
 
-Data directory: `data/airfrans_remeshed`
-Parquet shards: 3; samples: 1000
+Data directory: `data/airfrans_clipped`
+Parquet shards: 72; samples: 1000
 
 ## Card metadata
 
@@ -35,8 +35,8 @@ Parquet shards: 3; samples: 1000
 | `angle_of_attack` | -0.0725359 |
 | `inlet_velocity` | 31.283 |
 
-- fields: `Uy`, `p`, `nut`, `implicit_distance`, `Ux`
-- nodes: 7418; elements: TRI_3 × 13487
+- fields: `vtkOriginalPointIds`, `p`, `implicit_distance`, `Uy`, `Ux`, `nut`
+- nodes: 177418; elements: TRI_3 × 352358
 - bases: ['Base_2_2']; zones: ['Zone']
 - nodal tags: none
 - node bounding box: x ∈ [-2.000, 4.000], y ∈ [-1.500, 1.500]
@@ -50,8 +50,8 @@ Parquet shards: 3; samples: 1000
 | `angle_of_attack` | 0.0626224 |
 | `inlet_velocity` | 31.382 |
 
-- fields: `Uy`, `p`, `nut`, `implicit_distance`, `Ux`
-- nodes: 7898; elements: TRI_3 × 14586
+- fields: `vtkOriginalPointIds`, `p`, `implicit_distance`, `Uy`, `Ux`, `nut`
+- nodes: 180793; elements: TRI_3 × 359061
 - bases: ['Base_2_2']; zones: ['Zone']
 - nodal tags: none
 - node bounding box: x ∈ [-2.000, 4.000], y ∈ [-1.500, 1.500]
@@ -65,8 +65,8 @@ Parquet shards: 3; samples: 1000
 | `angle_of_attack` | 0.239337 |
 | `inlet_velocity` | 31.468 |
 
-- fields: `Uy`, `p`, `nut`, `implicit_distance`, `Ux`
-- nodes: 7225; elements: TRI_3 × 13706
+- fields: `vtkOriginalPointIds`, `p`, `implicit_distance`, `Uy`, `Ux`, `nut`
+- nodes: 177179; elements: TRI_3 × 351884
 - bases: ['Base_2_2']; zones: ['Zone']
 - nodal tags: none
 - node bounding box: x ∈ [-2.000, 4.000], y ∈ [-1.500, 1.500]
@@ -81,13 +81,17 @@ Parquet shards: 3; samples: 1000
 | Re = U∞·c/ν | 2.0185e+06 | 4.02655e+06 | 6.03891e+06 |
 | C_L | -0.53363 | 0.683128 | 1.89328 |
 | C_D | 0.00690439 | 0.0107423 | 0.0459486 |
-| mesh nodes | 4203 | 7738.5 | 9711 |
-| wall nodes (boundary loop off the clip box) | 473 | 1115.5 | 1670 |
-| max |implicit_distance| on wall nodes | 1.89758e-06 | 5.23963e-06 | 0.000317815 |
+| mesh nodes | 155730 | 180585 | 210414 |
+| wall nodes (boundary loop off the clip box) | 843 | 1017 | 1217 |
+| max |implicit_distance| on wall nodes | 0 | 0 | 0 |
 
 ν(T = 298.15 K) = 1.549815e-05 m²/s (AirfRANS polynomial); c = 1.0 m.
 
 Per-sample identifier: the samples carry no original AirfRANS simulation name (no name scalar, no tag, no metadata field); `sample_id` is the row index into `all_samples`, which is also what the card's split lists index.
+
+Streaming cost: 2.23 s per sample (read + deserialise + wall extraction), peak RSS 1.80 GB.
+
+Split lists compared with `airfrans_remeshed`: identical.
 
 ## Gate 2
 
@@ -97,5 +101,8 @@ Per-sample identifier: the samples carry no original AirfRANS simulation name (n
 - [x] derived Re within ≈ [2e6, 6e6]
 - [x] aerofoil wall identifiable (single closed boundary loop off the clip box, ≥ 50 nodes, all with |implicit_distance| < 0.001)
 - [x] 1000 samples
+- [x] flow fields present (p, Ux, Uy, nut)
+- [x] every mesh is triangles only
+- [x] card splits identical to airfrans_remeshed
 
 **Gate 2: PASS**

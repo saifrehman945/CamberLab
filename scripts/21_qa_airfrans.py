@@ -32,6 +32,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.airfrans.plotting import INK_MUTED, REFERENCE, SERIES, plt, save  # noqa: E402
+from scripts.airfrans.reference import REF_DIR, read_tecplot_zones  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s — %(message)s")
 log = logging.getLogger(__name__)
@@ -42,7 +43,6 @@ DATASET_PATH = RESULTS_DIR / "airfrans_dataset.csv"
 FLAGS_PATH = RESULTS_DIR / "airfrans_qa_flags.csv"
 REPORT_PATH = RESULTS_DIR / "airfrans_qa.md"
 FIG_DIR = RESULTS_DIR / "figures" / "qa"
-REF_DIR = PROJECT_ROOT / "validation_data" / "common"
 
 FEATURES = ["alpha_deg", "log10_Re", "t_max", "x_tmax", "m_max", "x_m"]
 MAX_FAIL_FRACTION = 0.02
@@ -123,20 +123,6 @@ def loo_outliers(df: pd.DataFrame, target: np.ndarray, name: str) -> pd.DataFram
 # --------------------------------------------------------------------------
 # Reference data
 # --------------------------------------------------------------------------
-
-def read_tecplot_zones(path: Path) -> dict[str, np.ndarray]:
-    zones: dict[str, list] = {}
-    current = "default"
-    for line in path.read_text().splitlines():
-        s = line.strip()
-        if not s or s.startswith("#") or s.lower().startswith("variables"):
-            continue
-        if s.lower().startswith("zone"):
-            current = s.split("=", 1)[1].strip().strip('"') if "=" in s else f"zone{len(zones)}"
-            continue
-        zones.setdefault(current, []).append([float(v) for v in s.split()])
-    return {k: np.asarray(v) for k, v in zones.items()}
-
 
 def reference_comparison(df: pd.DataFrame) -> dict:
     ladson = read_tecplot_zones(REF_DIR / "CLCD_Ladson_expdata.dat")

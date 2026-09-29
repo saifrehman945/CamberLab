@@ -63,3 +63,13 @@ data/
 models/scarce/
 models/reynolds/
 models/aoa/
+# Curve models for full: only PCA, GP and MLP are committed (~100 MB). The
+# per-mode KRG (~700 MB) and multi-output RF (~170 MB) curve models are
+# regenerated with
+#   uv run python scripts/09_train_surrogates.py --task full --outputs curves
+models/full/curves/krg_*.joblib
+models/full/curves/rf_*.joblib
+
+# Native wall nodes per sample (ragged, ~100 MB); regenerate with
+#   uv run python scripts/20_ingest_airfrans.py
+results/airfrans_wall_native.npz

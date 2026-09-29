@@ -27,7 +27,7 @@ SYMMETRIC_CAMBER_TOL = 5e-4   # |m_max| below this => section treated as symmetr
 NOSE_WINDOW = 0.005           # chord fraction of nodes used to fit the leading edge
 NOSE_MIN_NEIGHBOURS = 3       # at least this many loop neighbours each side in the fit
 
-# Mesh clip box of AirfRANS_remeshed (dataset card: [-2, 4] x [-1.5, 1.5]).
+# Mesh clip box of the PLAID AirfRANS variants (dataset cards: [-2, 4] x [-1.5, 1.5]).
 _BOX_ATOL = 1e-9
 
 
@@ -78,22 +78,31 @@ def _chain_loop(edges: np.ndarray) -> np.ndarray:
     return np.asarray(order)
 
 
-def extract_surface(sample) -> np.ndarray:
-    """Ordered (x, y) wall points of one AirfRANS sample, shape (n, 2), not repeated at the end.
+def wall_loop(sample) -> np.ndarray:
+    """Node indices of the aerofoil wall of one AirfRANS sample, in loop order (not repeated).
 
-    `sample` is a scripts.airfrans.io.SampleData (or a plaid Sample, which is
-    converted). Wall nodes are the mesh boundary nodes off the clip box; they
-    are chained along boundary edges (never sorted by polar angle, which
-    misorders thin or reflexed trailing edges). All wall nodes are checked to
-    have |implicit_distance| < WALL_TOL.
+    `sample` is a scripts.airfrans.io.SampleData. Wall nodes are the mesh
+    boundary nodes off the clip box; they are chained along boundary edges
+    (never sorted by polar angle, which misorders thin or reflexed trailing
+    edges). All wall nodes are checked to have |implicit_distance| < WALL_TOL.
     """
-    if not hasattr(sample, "triangles"):
-        from scripts.airfrans.io import extract
-        sample = extract(sample, index=-1)
     order = _chain_loop(_wall_edges(sample))
     d_max = float(np.abs(sample.implicit_distance[order]).max())
     if d_max > WALL_TOL:
         raise ValueError(f"wall node has |implicit_distance| = {d_max:.3g} > {WALL_TOL:g}")
+    return order
+
+
+def extract_surface(sample) -> np.ndarray:
+    """Ordered (x, y) wall points of one AirfRANS sample, shape (n, 2), not repeated at the end.
+
+    `sample` is a scripts.airfrans.io.SampleData (or a plaid Sample, which is
+    converted); see wall_loop for how the wall is found.
+    """
+    if not hasattr(sample, "triangles"):
+        from scripts.airfrans.io import extract
+        sample = extract(sample, index=-1)
+    order = wall_loop(sample)
     return np.column_stack([sample.x[order], sample.y[order]])
 
 

@@ -1,1 +1,1 @@
-"""AirfRANS (PLAID-datasets/AirfRANS_remeshed) ingestion helpers."""
+"""AirfRANS (PLAID-datasets/AirfRANS_clipped) ingestion helpers."""

@@ -52,3 +52,23 @@ def test_reload_reproduces_train_predictions(task, family, target):
         expected = saved[f"{family}_{target}"]
     got = predict(model, family, X)
     assert np.array_equal(got, expected), float(np.max(np.abs(got - expected)))
+
+
+# Only GP and MLP curve models are committed for full; KRG / RF ones exist after a local run.
+CURVE_CASES = [(t, f, q) for t in AVAILABLE
+               for q in json.loads((MODELS_DIR / t / "envelope.json").read_text()).get("curve_info", {})
+               for f in FAMILIES if (MODELS_DIR / t / "curves" / f"{f}_{q}.joblib").exists()]
+
+
+@pytest.mark.parametrize("task,family,quantity", CURVE_CASES)
+def test_curve_reload_reproduces_train_predictions(task, family, quantity):
+    from scripts.surrogate.curves import predict_weights
+    d = MODELS_DIR / task
+    train, _ = task_frames(task)
+    X = joblib.load(d / "preprocessor.joblib").transform(get_xy(train)[0])
+    model = joblib.load(d / "curves" / f"{family}_{quantity}.joblib")
+    with np.load(d / "curves" / "train_pred.npz") as saved:
+        assert np.array_equal(saved["sample_id"], train.sample_id.to_numpy())
+        expected = saved[f"{family}_{quantity}"]
+    got = predict_weights(model, family, X)
+    assert np.array_equal(got, expected), float(np.max(np.abs(got - expected)))

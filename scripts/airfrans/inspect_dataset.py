@@ -2,20 +2,23 @@
 """
 Script: scripts/airfrans/inspect_dataset.py
 Stage:  AirfRANS Phase 2 — dataset inspection (Gate 2)
-Purpose: Load the local AirfRANS_remeshed dataset, log what each sample holds,
-         and check that everything a coefficient surrogate needs is present.
+Purpose: Load the local AirfRANS dataset (default: the clipped variant), log
+         what each sample holds, and check that everything the coefficient and
+         surface-curve surrogates need is present.
 
 Writes results/airfrans_inspection.md. Exits non-zero if any Gate 2 check fails.
 
 Usage:
-    uv run python scripts/airfrans/inspect_dataset.py [--data-dir DIR]
+    uv run python scripts/airfrans/inspect_dataset.py [--data-dir DIR] [--reference-dir DIR]
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import resource
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +36,7 @@ log = logging.getLogger(__name__)
 RESULTS_DIR = PROJECT_ROOT / "results"
 REPORT_PATH = RESULTS_DIR / "airfrans_inspection.md"
 N_DETAILED = 3
+REFERENCE_DIR = PROJECT_ROOT / "data" / "airfrans_remeshed"   # the variant the splits were first frozen from
 
 
 def describe_sample(i: int, sample) -> list[str]:
@@ -60,6 +64,8 @@ def describe_sample(i: int, sample) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-dir", default=None)
+    ap.add_argument("--reference-dir", default=str(REFERENCE_DIR),
+                    help="another AirfRANS variant whose card splits must match (skipped if absent)")
     args = ap.parse_args()
 
     data_dir = io.resolve_data_dir(args.data_dir)
@@ -69,7 +75,7 @@ def main() -> int:
     reader = io.RawSampleReader(data_dir)
     n = len(reader)
 
-    md = ["# AirfRANS_remeshed — Phase 2 inspection", "",
+    md = [f"# {card.get('pretty_name', 'AirfRANS')} — dataset inspection (Gate 2)", "",
           f"Data directory: `{data_dir.relative_to(PROJECT_ROOT) if data_dir.is_relative_to(PROJECT_ROOT) else data_dir}`",
           f"Parquet shards: {len(io.shard_paths(data_dir))}; samples: {n}", "",
           "## Card metadata", ""]
@@ -93,12 +99,21 @@ def main() -> int:
 
     # --- aggregate pass over every sample ---------------------------------
     rows = []
-    for d in tqdm(io.iter_samples(data_dir), total=n, desc="scanning samples"):
+    field_names: set[str] = set()
+    all_triangles = True
+    t0 = time.perf_counter()
+    for i in tqdm(range(n), desc="scanning samples"):
+        sample = io.deserialise(reader.raw_bytes(i))
+        field_names |= {str(f) for f in sample.get_field_names()} if i == 0 else set()
+        all_triangles &= all("TRI" in str(k).upper() for k in sample.get_elements())
+        d = io.extract(sample, i)
         wall = wall_node_mask(d)
         extract_surface(d)  # raises unless the wall is one closed loop
         rows.append((d.scalars.get(io.SCALAR_AOA, np.nan), d.scalars.get(io.SCALAR_UINF, np.nan),
                      d.scalars.get(io.SCALAR_CL, np.nan), d.scalars.get(io.SCALAR_CD, np.nan),
                      len(d.x), int(wall.sum()), float(np.abs(d.implicit_distance[wall]).max())))
+    seconds_per_sample = (time.perf_counter() - t0) / n
+    peak_rss_gb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6   # Linux reports KiB
     arr = np.array(rows, dtype=np.float64)
     aoa, uinf, cl, cd, nnodes, nwall, wall_dmax = arr.T
     re = io.reynolds(uinf)
@@ -116,7 +131,19 @@ def main() -> int:
     md += ["", f"ν(T = {io.TEMPERATURE} K) = {io.NU:.6e} m²/s (AirfRANS polynomial); c = {io.CHORD} m.",
            "", "Per-sample identifier: the samples carry no original AirfRANS simulation name "
            "(no name scalar, no tag, no metadata field); `sample_id` is the row index into "
-           "`all_samples`, which is also what the card's split lists index.", ""]
+           "`all_samples`, which is also what the card's split lists index.", "",
+           f"Streaming cost: {seconds_per_sample:.2f} s per sample (read + deserialise + wall "
+           f"extraction), peak RSS {peak_rss_gb:.2f} GB.", ""]
+
+    reference_dir = Path(args.reference_dir).resolve()
+    if reference_dir != data_dir and (reference_dir / "README.md").exists():
+        ref = io.load_splits(reference_dir)
+        splits_match = (sorted(ref) == sorted(splits)
+                        and all(np.array_equal(ref[k], splits[k]) for k in splits))
+        md += [f"Split lists compared with `{reference_dir.name}`: "
+               f"{'identical' if splits_match else 'DIFFERENT'}.", ""]
+    else:
+        splits_match = None
 
     # --- Gate 2 -------------------------------------------------------------
     checks = [
@@ -131,7 +158,11 @@ def main() -> int:
          f"all with |implicit_distance| < {WALL_TOL:g})",
          bool((nwall >= 50).all()) and bool((wall_dmax < WALL_TOL).all())),
         (f"{io.EXPECTED_SAMPLES} samples", n == io.EXPECTED_SAMPLES),
+        ("flow fields present (" + ", ".join(io.FLOW_FIELDS) + ")", set(io.FLOW_FIELDS) <= field_names),
+        ("every mesh is triangles only", all_triangles),
     ]
+    if splits_match is not None:
+        checks.append((f"card splits identical to {reference_dir.name}", splits_match))
     md += ["## Gate 2", ""]
     for label, ok in checks:
         md.append(f"- [{'x' if ok else ' '}] {label}")

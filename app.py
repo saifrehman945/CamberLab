@@ -19,7 +19,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.airfrans.geometry import naca_coordinates, parse_naca  # noqa: E402
-from scripts.surrogate.inference import load_envelope, naca_features, predict_curve  # noqa: E402
+from scripts.surrogate.inference import (  # noqa: E402
+    curve_quantities,
+    has_curve_models,
+    load_envelope,
+    naca_features,
+    predict_curve,
+    predict_surface,
+)
 from scripts.surrogate.models import FAMILIES, FAMILY_LABELS  # noqa: E402
 
 RESULTS_DIR = PROJECT_ROOT / "results"
@@ -98,6 +105,29 @@ def polar_figure(df: pd.DataFrame) -> go.Figure:
     return style_plot(fig, "Cd", "Cl", "Drag polar")
 
 
+def surface_figure(surf: pd.DataFrame, q: str, alpha: float) -> go.Figure:
+    """Cp or Cf against x/c, upper solid and lower dashed, with ±2σ bands where available."""
+    scale = 1e3 if q == "Cf" else 1.0
+    fig = go.Figure()
+    for side, dash in (("upper", "solid"), ("lower", "dash")):
+        s = surf[surf.surface == side]
+        if f"{q}_lo" in s:
+            fig.add_trace(go.Scatter(x=pd.concat([s.x_c, s.x_c[::-1]]),
+                                     y=pd.concat([s[f"{q}_hi"], s[f"{q}_lo"][::-1]]) * scale,
+                                     fill="toself", fillcolor=SERIES_BAND, line=dict(width=0),
+                                     hoverinfo="skip", name="±2σ band", showlegend=side == "upper"))
+        fig.add_trace(go.Scatter(x=s.x_c, y=s[q] * scale, mode="lines", name=f"{side} surface",
+                                 line=dict(color=SERIES if side == "upper" else TRAINING, width=2.5, dash=dash),
+                                 hovertemplate=f"x/c %{{x:.3f}}<br>{q} %{{y:.4g}}<extra>{side}</extra>"))
+    if q == "Cp":
+        fig.update_yaxes(autorange="reversed")
+        title, y_title = f"Pressure coefficient at α = {alpha:g}°", "Cp"
+    else:
+        fig.add_hline(y=0, line_color="#8a8985", line_width=1)
+        title, y_title = f"Skin friction at α = {alpha:g}° (Cf < 0: reversed flow)", "Cf × 10³"
+    return style_plot(fig, "x/c", y_title, title)
+
+
 def model_error_note(metrics: pd.DataFrame, family: str) -> list[str]:
     if metrics.empty:
         return ["No evaluation metrics file — run scripts/10_global_validation.py."]
@@ -119,7 +149,8 @@ envelope = load_envelope(TASK)["envelope"]
 metrics = load_metrics()
 
 st.title("CamberLab")
-st.caption("Lift and drag of NACA 4- and 5-digit aerofoils, predicted in milliseconds by surrogates "
+st.caption("Lift, drag and surface pressure / skin friction of NACA 4- and 5-digit aerofoils, "
+           "predicted in milliseconds by surrogates "
            "trained on 800 AirfRANS steady RANS (k-ω SST) simulations.")
 
 with st.sidebar:
@@ -128,6 +159,7 @@ with st.sidebar:
     re = st.slider("Reynolds number", min_value=2.0e6, max_value=6.0e6, value=3.0e6, step=1.0e5, format="%.1e")
     alpha_min, alpha_max = st.slider("AoA sweep (deg)", -5.0, 15.0, (-5.0, 15.0), step=0.5)
     n_points = st.slider("Sweep points", 21, 161, 81, step=10)
+    surface_alpha = st.slider("AoA for surface curves (deg)", -5.0, 15.0, 4.0, step=0.5)
     family = st.selectbox("Model family", FAMILIES, index=FAMILIES.index("gp"),
                           format_func=lambda f: {"gp": "GP — Gaussian process", "rf": "RF — random forest",
                                                  "mlp": "MLP — neural network", "krg": "KRG — Kriging (SMT)"}[f])
@@ -178,6 +210,19 @@ c2.plotly_chart(curve_figure(df, "Cd", "Drag curve", "Cd", family), width="stret
 c3, c4 = st.columns(2)
 c3.plotly_chart(polar_figure(df), width="stretch")
 c4.plotly_chart(curve_figure(df, "L_over_D", "Efficiency", "L/D", family), width="stretch")
+quantities = curve_quantities(TASK)
+if quantities and not has_curve_models(family, TASK):
+    st.caption(f"Surface Cp / Cf curves are not bundled for {FAMILY_LABELS[family]} (only GP and MLP "
+               "curve models are committed); train them with `scripts/09_train_surrogates.py "
+               "--outputs curves`.")
+elif quantities:
+    surf = predict_surface(surface_alpha, re, code, family, TASK)
+    cols = st.columns(len(quantities))
+    for col, q in zip(cols, quantities):
+        col.plotly_chart(surface_figure(surf, q, surface_alpha), width="stretch")
+    if "Cf" not in quantities:
+        st.caption("Skin friction is not shown: the computed wall shear stress did not reproduce "
+                   "AirfRANS' drag closely enough (results/airfrans_surface_gate.md).")
 if family not in ("gp", "krg"):
     st.caption("Uncertainty bands are shown for the GP and KRG families only.")
 
@@ -199,5 +244,5 @@ st.download_button("Download predictions CSV", data=table.to_csv(index=False).en
 
 st.divider()
 st.caption("Data: AirfRANS (Bonnet et al., NeurIPS 2022 Datasets & Benchmarks, arXiv:2212.07564), "
-           "via PLAID-datasets/AirfRANS_remeshed, © Safran, licensed under the Open Database "
+           "via PLAID-datasets/AirfRANS_clipped, © Safran, licensed under the Open Database "
            "License (ODbL 1.0).")
