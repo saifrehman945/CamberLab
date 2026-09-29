@@ -142,7 +142,9 @@ Surface curves on the `full` test set (GP, the app's default):
 | Cf(x/c) | 0.966 | 8.5×10⁻⁴ | 96% | `mean_rel_wss` 0.46 / 0.43 | 105 / 135 (GraphSAGE) |
 
 GP identifies upper-surface separation correctly in 97% of test cases, to
-within 0.015 c. For NACA 0012 at Re 6×10⁶ its Cp and Cf lie on NASA TMR's
+within 0.015 c. That separation accuracy is limited by the 20 PCA modes
+itself (their truncation alone costs ~0.015 c); for Cp and overall Cf the
+regressors, not the modes, set the error. For NACA 0012 at Re 6×10⁶ its Cp and Cf lie on NASA TMR's
 CFL3D SST solution. Full tables, including the paper's original numbers:
 [`results/airfrans_benchmark.md`](results/airfrans_benchmark.md). Full write-up:
 [`results/airfrans_report.md`](results/airfrans_report.md).
@@ -150,7 +152,11 @@ CFL3D SST solution. Full tables, including the paper's original numbers:
 Known weak spot: **Cd extrapolation to lower Re.** On the `reynolds` task
 (train Re 3–5×10⁶), GP and Kriging over-predict Cd by up to 2.6× (GP) and
 4.6× (KRG) for a handful of thin, cambered sections at negative α below
-Re 3×10⁶. RF and MLP extrapolate drag more gracefully there (≤ 1.27×).
+Re 3×10⁶. RF and MLP extrapolate drag more gracefully there (≤ 1.27×). GP's
+good mean error on this task (2.8%, down from 15.8% on the remeshed data) is
+real but fragile: its optimiser has a second, worse optimum with the Re trend
+reversed, and small data changes decide which one it finds (see the report,
+failure mode 1).
 
 ## How it works
 

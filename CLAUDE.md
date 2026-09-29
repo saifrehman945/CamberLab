@@ -243,8 +243,11 @@ log.error("Gate 4 failed: 3.1% of rows fail hard checks")
     `TransformedTargetRegressor(StandardScaler)`; patience and L2 by CV.
   - **KRG**: SMT `KRG`, anisotropic θ, `eval_noise=True`.
 - **Curves** (`scripts/surrogate/curves.py`): one PCA per quantity, fitted on
-  train rows only, with the mode count chosen by 5-fold CV reconstruction
-  (capped at 20). GP/KRG fit one model per mode (σ per mode → ±2σ band,
+  train rows only, with a fixed 20 modes (`N_MODES`; the 5-fold CV
+  reconstruction RMSE per k is recorded, not used to choose). k = 20 limits
+  only the Cf separation point (~0.015 c truncation floor); don't raise it
+  without checking by train CV that the GP realises the gain. GP/KRG fit one
+  model per mode (σ per mode → ±2σ band,
   independent modes); RF/MLP fit one multi-output model. Cf curves are
   trained only if `airfrans_surface_gate.json` has `cf_pass`. Saved to
   `models/{task}/curves/{pca,family}_{Cp,Cf}.joblib` + `train_pred.npz`,
@@ -279,6 +282,9 @@ log.error("Gate 4 failed: 3.1% of rows fail hard checks")
   experiment at lower Re); steady RANS near stall (α > ~12°) least reliable;
   accuracy bounded by AirfRANS' own CFD; the computed τ_w runs ~2.5% high
   against AirfRANS' C_D; curve-integrated drag is unreliable.
+- The GP marginal likelihood can have several optima. On `reynolds` Cd one
+  of them reverses the Re trend (report, failure mode 1). After retraining,
+  check that the GP's Cd rises as Re falls before trusting it.
 
 ## 8. Tests and Gates
 

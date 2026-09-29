@@ -150,14 +150,37 @@ Failure modes:
    In log-Cd space the GP learns a steep separation cliff from the high-drag
    separated cases at Re 3–5×10⁶ (the QA outliers 99 and 300 are of that
    kind), and it projects the cliff onto attached cases it has never seen at
-   lower Re. Retrained on the clipped features, GP Cd R² rose from 0.22 to
-   0.91, and its −20% bias at Re < 3×10⁶ disappeared. **This is not a fix.**
-   The features moved by only ~10⁻⁴ (standardised), so the jump is the
-   marginal-likelihood optimiser landing in a different optimum, which shows
-   how fragile this fit is. Five test cases are still over-predicted > 1.5×
-   by both GP (worst 2.6×) and KRG (worst 4.6×, sample 166: CFD 0.0083, KRG
-   0.0381). MLP and RF have no over-prediction above 1.27×. All four
-   families share a few under-predictions to ~0.3× on separated cases.
+   lower Re. Five test cases are still over-predicted > 1.5× by both GP
+   (worst 2.6×) and KRG (worst 4.6×, sample 166: CFD 0.0083, KRG 0.0381).
+   MLP and RF have no over-prediction above 1.27×. All four families share
+   a few under-predictions to ~0.3× on separated cases.
+
+   **Why GP Cd on `reynolds` improved from R² 0.22 / mean error 15.8%
+   (remeshed) to 0.91 / 2.8% (clipped).** The targets are bit-identical
+   between the two ingests. Only the geometry features moved: x_tmax by up
+   to 0.51 of its (tiny) training standard deviation, m_max and x_m by
+   ≤ 0.04 std. Refitting with identical code reproduces both results
+   exactly. The log marginal likelihood has two optima that differ in the
+   Re trend they learn:
+
+   | fit | log marginal likelihood | model Cd(Re 2×10⁶) / Cd(Re 5.5×10⁶) | test mean rel. error |
+   |---|---|---|---|
+   | remeshed features, as trained (and with 20 restarts) | 258.1 | 0.81 | 15.8% |
+   | remeshed features, started from the clipped optimum | **263.1** | 1.20 | 2.8% |
+   | clipped features, as trained | 263.2 | 1.20 | 2.8% |
+   | physical trend (linear fit, `full` train rows, attached) | — | 1.185 | — |
+
+   The remeshed fit was an **optimiser failure**: a worse local optimum in
+   which drag *falls* as Re drops, the source of the old −19% bias below
+   Re 2.5×10⁶. The better optimum existed for those features too, but the
+   optimiser (default start plus 5 or 20 random restarts) did not reach it.
+   The clipped features only moved the default start into the right basin.
+   The current fit is the better one by the training likelihood and has
+   the physical Re trend. It is **fragile**, though: small data changes can
+   flip it back. A deterministic long-length-scale start, or an explicit
+   linear trend in the kernel, would make it robust; neither is
+   implemented. (This diagnosis read the `reynolds` test set outside
+   `10_global_validation.py`. No model was changed as a result.)
 2. **RF cannot extrapolate (`aoa`).** Its piecewise-constant predictions
    flatten beyond the training α: for α > 12.5° the Cl bias is −0.136 and the
    Cd bias −16%. Its mean relative Cl error, 83%, is inflated further by
@@ -169,7 +192,9 @@ Failure modes:
    example GP on `full`: mean 4.5% vs median 1.1%). Read the median.
 
 The tests were evaluated once. No model or hyperparameter was changed after
-seeing test results.
+seeing test results. (The GP optimum diagnosis under failure mode 1 read the
+`reynolds` test set again, but only to explain the result; nothing was
+changed.)
 
 ## 6. Surface curves: Cp(x/c) and Cf(x/c)
 
@@ -201,13 +226,35 @@ VTK's filter on the original mixed-element mesh). On the coarse remeshed
 variant the same code recovered only ~40% of the shear drag. That is why the
 project moved to clipped.
 
-**Models.** One PCA per quantity, fitted on train rows only. Its mode count
-comes from 5-fold CV reconstruction error, capped at 20; every task hits the
-cap. At k = 20 the CV reconstruction RMSE is 0.0044 for Cp (0.4% of its
-spread) and 1.5×10⁻⁴ for Cf (2.5%, mostly at the leading-edge spikes): the
-floor for every family. The existing families predict the 20 mode weights:
-GP/KRG with one model per mode (a σ per mode, propagated to a ±2σ curve band
+**Models.** One PCA per quantity, fitted on train rows only, with a
+**fixed 20 modes**. The existing families predict the 20 mode weights: GP/KRG
+with one model per mode (a σ per mode, propagated to a ±2σ curve band
 assuming independent modes), RF/MLP with one multi-output model.
+
+*Is the mode count what limits accuracy?* The first version chose k by a
+relative rule ("stop when 2 more modes cut the CV reconstruction error by
+< 1%"). It hit the cap of 20 on every task, because a PCA spectrum decays
+steadily and the rule can never trigger, so hitting the cap was not
+evidence that more modes were needed. The rule is replaced by the fixed k,
+and the question was checked directly, by 5-fold CV on `full` train rows:
+
+| | PCA floor k=20 | k=30 | k=40 | MLP k=20 | MLP k=40 |
+|---|---|---|---|---|---|
+| Cp RMSE | 0.0044 | 0.0018 | 0.0009 | 0.132 | 0.179 |
+| Cp suction-peak MAE | 0.005 | 0.002 | 0.001 | 0.28 | 0.37 |
+| Cf RMSE | 1.5×10⁻⁴ | 7.1×10⁻⁵ | 3.8×10⁻⁵ | 1.1×10⁻³ | 1.4×10⁻³ |
+| Cf separation x/c MAE | **0.015** | 0.011 | 0.004 | 0.018 | 0.021 |
+
+For Cp and overall Cf the regressors' error is 8–60× the truncation floor,
+so more modes cannot help. The GP's test errors (Cp RMSE 0.062, suction
+peak 0.10) are also 12–20× the floor. **The exception is the Cf separation
+point:** truncation alone costs ~0.015 c, the same as the GP's test error
+(0.015 c), and it also gets 2.75% of separate/attached calls wrong. The
+separation point is therefore bounded by k = 20, and k = 40 would lower
+the floor to 0.004 c. k = 20 is kept as a cost/accuracy trade-off: GP/KRG
+fit one model per mode, so k = 40 doubles their training time (~5 h for all
+tasks) and KRG model size. Whether GP would actually realise the k = 40
+gain was not tested.
 
 **Test results** (`results/airfrans_curve_metrics.csv`; station-mean R²):
 
@@ -271,6 +318,18 @@ curves`. Training all four tasks' curve models takes ~2.5 h.
 - **Curve-model size:** a shared-kernel multi-output GP/KRG per quantity
   would cut the curve models ~20× at some accuracy cost. Worth testing if
   size matters more than per-mode length scales.
+- **GP optimiser robustness:** add a deterministic long-length-scale start
+  (keep the fit with the higher training likelihood) or an explicit linear
+  trend term, so the `reynolds` Cd fit cannot fall back into the
+  reversed-Re optimum (failure mode 1).
+- **Separation point:** raising the Cf modes to ~40 lowers the truncation
+  floor on the separation x/c from 0.015 c to 0.004 c. Check by train CV
+  that the GP realises it before paying the doubled GP/KRG cost.
+- **Curve MLP target scaling:** `TransformedTargetRegressor(StandardScaler)`
+  gives every PCA weight unit variance, so noisy high-order modes weigh as
+  much in the loss as the dominant ones. That is why the MLP gets worse with
+  more modes (CV Cp RMSE 0.13 at k = 20 → 0.18 at k = 40). One global scale
+  for all weights would keep the loss equal to the curve error.
 - **Stale screenshot:** `docs/images/app-overview.png` shows the retired
   regime UI and is no longer referenced from the README. Capture a new one.
 - **Low-Re drag extrapolation:** if extrapolation in Re matters, add

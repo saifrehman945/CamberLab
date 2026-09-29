@@ -6,8 +6,14 @@ Purpose: Surface-curve surrogates. Cp(x/c) and Cf(x/c) on the 202-station
          models.predict) predict the PCA mode weights from the same six
          features as the Cl/Cd models.
 
-- PCA and the mode count are fitted on the task's training rows only; the
-  count is chosen by 5-fold CV reconstruction error on those rows.
+- PCA is fitted on the task's training rows only, with a fixed N_MODES = 20
+  modes per quantity. The 5-fold CV reconstruction error on those rows is
+  recorded for k in MODE_RANGE as the truncation floor. At k = 20 on `full`
+  that floor is negligible next to the regressors' error for Cp (RMSE 0.0044
+  vs >= 0.06) and for overall Cf (1.5e-4 vs ~1e-3). The exception is the Cf
+  separation point: truncation alone costs ~0.015 c, as much as GP's
+  error there (0.004 c at k = 40). k = 20 is kept as a deliberate
+  cost/accuracy trade-off: GP/KRG fit one model per mode.
 - GP and KRG fit one model per mode, so each mode has a posterior σ. The
   curve band is ±2·sqrt(Σ σᵢ² φᵢ²), which treats modes as independent (a
   documented approximation). RF and MLP fit one multi-output model; RF's
@@ -35,9 +41,8 @@ GATE_PATH = RESULTS_DIR / "airfrans_surface_gate.json"
 QUANTITIES = ["Cp", "Cf"]
 SIDES = ["upper", "lower"]
 PER_MODE_FAMILIES = {"gp", "krg"}          # one model per mode (posterior σ per mode)
-MODE_RANGE = range(4, 31)
-MODE_CAP = 20
-MODE_GAIN_TOL = 0.01                        # stop when 2 more modes cut CV RMSE by < 1%
+N_MODES = 20                                # fixed; see the module docstring
+MODE_RANGE = range(4, 31)                   # k values whose CV reconstruction RMSE is recorded
 
 
 def gated_quantities(gate_path: Path = GATE_PATH) -> list[str]:
@@ -82,19 +87,11 @@ def cv_reconstruction_rmse(Y: np.ndarray, modes=MODE_RANGE) -> dict[int, float]:
     return {k: float(np.sqrt(v / Y.size)) for k, v in sq.items()}
 
 
-def choose_n_modes(cv_rmse: dict[int, float]) -> int:
-    """Smallest k where two more modes improve the CV RMSE by less than MODE_GAIN_TOL, capped."""
-    for k in sorted(cv_rmse):
-        if k + 2 in cv_rmse and cv_rmse[k] - cv_rmse[k + 2] < MODE_GAIN_TOL * cv_rmse[k]:
-            return min(k, MODE_CAP)
-    return MODE_CAP
-
-
-def fit_pca(Y: np.ndarray) -> tuple[PCA, dict]:
+def fit_pca(Y: np.ndarray, n_modes: int = N_MODES) -> tuple[PCA, dict]:
+    """PCA with a fixed mode count; the CV reconstruction RMSE per k is recorded, not used to choose."""
     cv = cv_reconstruction_rmse(Y)
-    k = choose_n_modes(cv)
-    pca = PCA(n_components=k, svd_solver="full").fit(Y)
-    return pca, {"n_modes": k, "explained_variance": float(pca.explained_variance_ratio_.sum()),
+    pca = PCA(n_components=n_modes, svd_solver="full").fit(Y)
+    return pca, {"n_modes": n_modes, "explained_variance": float(pca.explained_variance_ratio_.sum()),
                  "cv_reconstruction_rmse": {int(m): r for m, r in cv.items()}}
 
 
