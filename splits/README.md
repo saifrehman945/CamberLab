@@ -4,7 +4,7 @@ Frozen train/test index files for the four AirfRANS tasks. Each `.npy` holds row
 
 ## Provenance
 
-Membership is the **official AirfRANS split**, as published in the `split` block of the `PLAID-datasets/AirfRANS_remeshed` dataset card (`data/airfrans_remeshed/README.md`), whose indices address the rows of the `all_samples` split. The comparison with the AirfRANS paper's test sets is therefore exact, apart from rows excluded by QA (`results/airfrans_qa_flags.csv`, `qa_pass = False`), which are removed before writing.
+Membership is the **official AirfRANS split**, as published in the `split` block of the `PLAID-datasets/AirfRANS_clipped` dataset card (`data/airfrans_clipped/README.md`; the `AirfRANS_remeshed` card lists identical splits), whose indices address the rows of the `all_samples` split. The comparison with the AirfRANS paper's test sets is therefore exact, apart from rows excluded by QA (`results/airfrans_qa_flags.csv`, `qa_pass = False`), which are removed before writing.
 
 | task | card train split | card test split |
 |---|---|---|

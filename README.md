@@ -1,7 +1,7 @@
 <h1 align="center">CamberLab</h1>
 
 <p align="center">
-  <strong>Millisecond lift and drag predictions for NACA 4- and 5-digit aerofoils, trained on AirfRANS</strong>
+  <strong>Millisecond lift, drag and surface pressure / skin-friction predictions for NACA 4- and 5-digit aerofoils, trained on AirfRANS</strong>
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@ CamberLab replaces a ~25-minute steady RANS simulation with a surrogate call
 that takes milliseconds:
 
 ```text
-(angle of attack, Reynolds number, NACA section) → (Cl, Cd, L/D)
+(angle of attack, Reynolds number, NACA section) → (Cl, Cd, L/D, Cp(x/c), Cf(x/c))
 ```
 
 Live demo: <https://camberlab.streamlit.app/>
@@ -30,6 +30,9 @@ paper's baselines, which predict the whole flow field and integrate forces
 from it, CamberLab regresses the force coefficients directly. That makes drag
 prediction far more accurate: on the paper's own test sets, CamberLab ranks
 drag with Spearman ρ_D ≈ 0.98, where the paper's best field model reaches 0.25.
+It also predicts the wall pressure and skin-friction distributions, with an
+error on the paper's own surface metrics about 4× (pressure) to two orders
+of magnitude (wall shear) lower than the field models'.
 
 ## Features
 
@@ -38,14 +41,18 @@ drag with Spearman ρ_D ≈ 0.98, where the paper's best field model reaches 0.2
   training time and from the analytic section at query time.
 - **Four surrogate families**: Gaussian process, random forest, MLP and
   Kriging (SMT), each fitted for Cl and log Cd.
+- **Surface distributions.** Cp(x/c) and signed Cf(x/c) on both surfaces
+  (Cf < 0 marks separation), predicted as PCA mode weights by the same
+  families. The CFD wall data behind them reproduces AirfRANS' C_L and C_D
+  to within 2.7% on every sample.
 - **Uncertainty where it is real.** GP and Kriging give posterior ±2σ bands;
   GP bands cover 95–97% of held-out test points on the `full` task.
 - **Honest envelope handling.** Queries outside the training range still get a
   prediction, always with a warning; they are never answered silently.
 - **Benchmarked like-for-like** on the four official AirfRANS tasks (`full`,
   `scarce`, `reynolds`, `aoa`) with the paper's metrics.
-- **Interactive app**: Cl–α, Cd–α, drag polar and L/D sweeps, section
-  preview and GP ±2σ uncertainty bands.
+- **Interactive app**: Cl–α, Cd–α, drag polar and L/D sweeps, Cp and Cf
+  distributions, section preview and GP ±2σ uncertainty bands.
 
 ## Quickstart
 
@@ -59,35 +66,44 @@ uv venv && uv pip install -r requirements.txt
 uv run streamlit run app.py
 ```
 
-The app and CLI only need the committed `models/full/` artifacts, not the dataset.
+The app and CLI only need the committed `models/full/` artifacts (~150 MB),
+not the dataset. Surface curves ship for the GP and MLP families; KRG and RF
+curve models are too large to commit and must be trained locally.
 
 ### Predict from the command line
 
 ```bash
 uv run python scripts/predict.py --alpha 4 --re 3e6 --naca 2412 --family all
+uv run python scripts/predict.py --alpha 4 --re 3e6 --naca 2412 --surface --surface-csv cp_cf.csv
 uv run python scripts/11_sweep_curves.py --naca 23012 --re 4e6     # α sweep → CSV + PNG
 ```
 
 ### Rebuild everything from the data
 
-Download AirfRANS once (≈ 611 MB; code never downloads it for you):
+Download AirfRANS once (the clipped variant, ≈ 18 GB on disk; code never
+downloads it for you):
 
 ```bash
-huggingface-cli download PLAID-datasets/AirfRANS_remeshed \
-  --repo-type dataset --local-dir data/airfrans_remeshed
+huggingface-cli download PLAID-datasets/AirfRANS_clipped \
+  --repo-type dataset --local-dir data/airfrans_clipped
 ```
 
-Then run the pipeline (about 25 minutes on a laptop, mostly training):
+Then run the pipeline (about 4 hours on a laptop with 8 GB RAM, mostly
+curve-model training; reading the data needs ~2 GB):
 
 ```bash
-uv run python scripts/airfrans/inspect_dataset.py    # checks the data (Gate 2)
-uv run python scripts/20_ingest_airfrans.py          # → results/airfrans_dataset.csv
+uv run python scripts/airfrans/inspect_dataset.py    # checks the data (Gate 2), ~35 min
+uv run python scripts/20_ingest_airfrans.py          # → dataset.csv + wall Cp/Cf curves, ~20 min
 uv run python scripts/21_qa_airfrans.py              # → results/airfrans_qa.md
 uv run python scripts/22_make_splits.py              # official AirfRANS splits
-uv run python scripts/09_train_surrogates.py --task all
+uv run python scripts/23_surface_gate.py             # wall data reproduces C_L/C_D?
+uv run python scripts/09_train_surrogates.py --task all                    # Cl/Cd + curves
 uv run python scripts/10_global_validation.py        # → results/airfrans_benchmark.md
 uv run pytest
 ```
+
+`09_train_surrogates.py --outputs coeffs` trains only the Cl/Cd models
+(~12 min).
 
 Use `--data-dir` or `AIRFRANS_DIR` if the data lives elsewhere.
 
@@ -99,31 +115,42 @@ shown because the mean blows up for Cl near zero.
 
 | Model | Cl R² | Cd R² | Spearman ρ_L | Spearman ρ_D | median rel. err. Cl | median rel. err. Cd |
 |---|---|---|---|---|---|---|
-| **GP** | 0.9992 | 0.9768 | 0.9995 | 0.978 | 1.07% | 0.51% |
-| **KRG** | 0.9992 | 0.9881 | 0.9995 | 0.987 | 0.92% | 0.66% |
-| **MLP** | 0.9984 | 0.9771 | 0.9990 | 0.992 | 2.00% | 1.93% |
-| **RF** | 0.9923 | 0.9498 | 0.9962 | 0.980 | 4.36% | 3.02% |
+| **GP** | 0.9993 | 0.9806 | 0.9995 | 0.980 | 1.07% | 0.59% |
+| **KRG** | 0.9993 | 0.9872 | 0.9995 | 0.985 | 0.90% | 0.71% |
+| **MLP** | 0.9984 | 0.9785 | 0.9989 | 0.993 | 1.86% | 1.83% |
+| **RF** | 0.9921 | 0.9492 | 0.9961 | 0.980 | 4.59% | 3.04% |
 
 Against the paper's field models, using their corrected results (arXiv
 2212.07564 v3, Appendix N), with mean relative error expressed as a percentage:
 
 | Task | Our best ρ_D | Paper's best ρ_D | Our best mean rel. err. Cd | Paper's best mean rel. err. Cd |
 |---|---|---|---|---|
-| `full` | 0.992 (MLP) | 0.250 (MLP) | 1.5% (KRG) | 618% (MLP) |
-| `scarce` | 0.990 (MLP) | 0.254 (GraphSAGE) | 3.2% (MLP) | 454% (MLP) |
-| `reynolds` | 0.962 (MLP) | 0.192 (Graph U-Net) | 6.2% (RF) | 829% (MLP) |
-| `aoa` | 0.964 (KRG) | 0.552 (Graph U-Net) | 2.1% (GP) | 435% (MLP) |
+| `full` | 0.993 (MLP) | 0.250 (MLP) | 1.6% (GP) | 618% (MLP) |
+| `scarce` | 0.989 (MLP) | 0.254 (GraphSAGE) | 3.4% (MLP) | 454% (MLP) |
+| `reynolds` | 0.965 (MLP) | 0.192 (Graph U-Net) | 2.8% (GP) | 829% (MLP) |
+| `aoa` | 0.963 (KRG) | 0.552 (Graph U-Net) | 2.0% (KRG) | 435% (MLP) |
 
 On lift, the paper's field models are competitive in ranking (ρ_L ≈ 0.99) but
 not in magnitude: their best mean relative Cl error is 15–38%, against 4–7%
-here. Full tables, including the paper's original numbers:
+here.
+
+Surface curves on the `full` test set (GP, the app's default):
+
+| Quantity | R² (station mean) | RMSE | ±2σ coverage | Paper metric: ours | Paper metric: their best |
+|---|---|---|---|---|---|
+| Cp(x/c) | 0.989 | 0.062 | 96% | `mean_rel_p` 2.02 | 8.19 (Graph U-Net) |
+| Cf(x/c) | 0.966 | 8.5×10⁻⁴ | 96% | `mean_rel_wss` 0.46 / 0.43 | 105 / 135 (GraphSAGE) |
+
+GP identifies upper-surface separation correctly in 97% of test cases, to
+within 0.015 c. For NACA 0012 at Re 6×10⁶ its Cp and Cf lie on NASA TMR's
+CFL3D SST solution. Full tables, including the paper's original numbers:
 [`results/airfrans_benchmark.md`](results/airfrans_benchmark.md). Full write-up:
 [`results/airfrans_report.md`](results/airfrans_report.md).
 
 Known weak spot: **Cd extrapolation to lower Re.** On the `reynolds` task
-(train Re 3–5×10⁶), GP and Kriging overpredict Cd by up to 5× for a handful of
-thin, cambered sections at negative α below Re 3×10⁶. RF and MLP extrapolate
-drag more gracefully there.
+(train Re 3–5×10⁶), GP and Kriging over-predict Cd by up to 2.6× (GP) and
+4.6× (KRG) for a handful of thin, cambered sections at negative α below
+Re 3×10⁶. RF and MLP extrapolate drag more gracefully there (≤ 1.27×).
 
 ## How it works
 
@@ -131,7 +158,11 @@ drag more gracefully there.
    aerofoil wall is recovered from the mesh as the boundary loop off the outer
    clip box, and reduced to four section features: max thickness `t_max` and
    its location `x_tmax`, max camber `m_max` and its location `x_m`. Re =
-   U∞·c/ν with c = 1 m and ν at 298.15 K.
+   U∞·c/ν with c = 1 m and ν at 298.15 K. Along the wall, Cp comes from the
+   stored pressure, and the wall shear stress (not stored) from the velocity
+   gradient in the wall cells. Both are resampled to 101 x/c stations per
+   surface. A gate checks that integrating them reproduces the stored C_L
+   and C_D (median error 0.00% and 1.7%).
 2. **QA.** Hard physical checks (0 of 1,000 rows fail), lift-slope and
    zero-lift-angle sanity checks, leave-one-out GP outlier screening (10 rows
    listed, none dropped), and a near-NACA0012 comparison against Ladson's
@@ -142,6 +173,8 @@ drag more gracefully there.
 4. **Train.** Inputs `[α, log10 Re, t_max, x_tmax, m_max, x_m]` are
    standardised. The targets are Cl and log Cd. RF leaf size and MLP
    early-stopping patience are chosen by 5-fold CV on the training rows.
+   Cp and Cf curves are compressed to 20 PCA modes each (fitted on training
+   rows), and the families predict the mode weights.
 5. **Query.** For a NACA code, the section is generated analytically (Abbott &
    von Doenhoff) and passed through the same feature extractor, so query
    features match training features.
@@ -158,6 +191,11 @@ drag more gracefully there.
 - **Near stall** (α > ~12°), steady RANS is the least reliable part of the
   data, and the surrogate inherits that.
 - **The surrogate can be no more accurate than AirfRANS' own CFD.**
+- **Surface curves:** don't integrate predicted Cp/Cf for drag (errors of
+  6–8% even for GP, since drag is a small residual of large pressure forces);
+  use the direct Cd model. The computed wall shear stress runs ~2.5% high
+  against AirfRANS' own drag. Near stall, PCA slightly smooths
+  plateau-shaped features.
 - `m_max` is measured from the geometric chord, so it reads slightly below the
   nominal NACA camber for cambered sections. Training and queries are
   consistent, but don't compare it one-to-one with NACA digits.
@@ -168,15 +206,16 @@ drag more gracefully there.
 CamberLab/
 ├── app.py                        # Streamlit app (reads models/full/)
 ├── scripts/
-│   ├── airfrans/                 # dataset I/O, geometry, inspection, plot style
+│   ├── airfrans/                 # dataset I/O, geometry, wall Cp/Cf, inspection, plot style
 │   ├── 20_ingest_airfrans.py     # samples → results/airfrans_dataset.csv
 │   ├── 21_qa_airfrans.py         # hard/soft QA, reference comparison
 │   ├── 22_make_splits.py         # frozen official splits → splits/
-│   ├── 09_train_surrogates.py    # GP / RF / MLP / KRG per task
+│   ├── 23_surface_gate.py        # wall Cp/Cf vs stored C_L/C_D
+│   ├── 09_train_surrogates.py    # GP / RF / MLP / KRG per task (Cl/Cd + curves)
 │   ├── 10_global_validation.py   # test metrics, plots, paper benchmark
 │   ├── 11_sweep_curves.py        # α sweep for one section
 │   ├── predict.py                # single-point CLI
-│   └── surrogate/                # data schema, model families, inference API
+│   └── surrogate/                # data schema, model families, curves, inference API
 ├── models/full/                  # committed models (other tasks: regenerate)
 ├── splits/                       # frozen train/test indices + provenance
 ├── results/                      # dataset, QA, metrics, benchmark, figures, report
@@ -208,7 +247,7 @@ first; it is the development guide for this repo. The essentials:
 
 The training data is AirfRANS, © Safran, distributed under the
 [Open Database License (ODbL 1.0)](https://opendatacommons.org/licenses/odbl/1-0/)
-via [`PLAID-datasets/AirfRANS_remeshed`](https://huggingface.co/datasets/PLAID-datasets/AirfRANS_remeshed).
+via [`PLAID-datasets/AirfRANS_clipped`](https://huggingface.co/datasets/PLAID-datasets/AirfRANS_clipped).
 If you use CamberLab's models or derived data, please cite:
 
 ```bibtex
@@ -228,5 +267,5 @@ If you use CamberLab's models or derived data, please cite:
 ## License
 
 Code is released under the MIT License. See [`LICENSE`](LICENSE). The AirfRANS
-data and databases derived from it (including `results/airfrans_dataset.csv`)
-remain under the ODbL.
+data and databases derived from it (including `results/airfrans_dataset.csv`
+and `results/airfrans_wall_curves.npz`) remain under the ODbL.

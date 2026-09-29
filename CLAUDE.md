@@ -10,13 +10,16 @@ shell commands.
 
 CamberLab predicts the lift and drag coefficients (C_L, C_D) of NACA 4- and
 5-digit aerofoils from angle of attack, Reynolds number and section geometry,
-using fast scalar surrogates (GP, RF, MLP, Kriging) trained on **AirfRANS**
+plus the wall pressure and skin-friction distributions Cp(x/c) and Cf(x/c),
+using fast surrogates (GP, RF, MLP, Kriging) trained on **AirfRANS**
 (Bonnet et al., NeurIPS 2022): 1,000 steady 2D incompressible RANS
 simulations (OpenFOAM, k-ω SST), Re 2–6×10⁶, α −5° to 15°, chord 1 m.
 
-It deliberately regresses the **coefficients**, not the flow field: the
-AirfRANS paper's field models predict drag poorly, and beating their drag
-prediction is the headline comparison (`results/airfrans_benchmark.md`).
+It deliberately regresses the **coefficients** (and wall curves), not the
+flow field: the AirfRANS paper's field models predict drag poorly, and beating
+their drag prediction is the headline comparison
+(`results/airfrans_benchmark.md`). C_D always comes from the scalar model;
+never integrate predicted curves for drag.
 
 The project previously generated its own OpenFOAM data with a four-regime
 design (regime classifier, one-hot regime features, per-regime templates).
@@ -79,28 +82,40 @@ conda activate ...       # no conda/micromamba in this project
 
 ## 3. Data Source — AirfRANS
 
-- Variant: **`PLAID-datasets/AirfRANS_remeshed`** (Hugging Face, ~611 MB,
-  1,000 samples, PLAID/CGNS samples in 3 parquet shards). Licence: ODbL 1.0
-  (© Safran) — keep the attribution in the app footer and README.
+- Variant: **`PLAID-datasets/AirfRANS_clipped`** (Hugging Face, 18 GB on
+  disk / ~36 GB unpacked, 1,000 samples of ~35 MB, PLAID/CGNS samples in 72
+  parquet shards). It keeps the original wall-resolved mesh (~180k nodes),
+  which the wall shear stress needs. `AirfRANS_remeshed` (611 MB) holds the
+  same samples, scalars and splits and still resolves via `--data-dir`, but
+  its coarse wall under-resolves shear (~40% of the shear drag). Licence: ODbL
+  1.0 (© Safran) — keep the attribution in the app footer and README.
 - The user downloads it once; **code never downloads data** and must not
   re-download silently:
 
   ```bash
-  huggingface-cli download PLAID-datasets/AirfRANS_remeshed \
-    --repo-type dataset --local-dir data/airfrans_remeshed
+  huggingface-cli download PLAID-datasets/AirfRANS_clipped \
+    --repo-type dataset --local-dir data/airfrans_clipped
   ```
 
 - Every script resolves the location as `--data-dir` > `$AIRFRANS_DIR` >
-  `data/airfrans_remeshed` (`scripts/airfrans/io.py::resolve_data_dir`).
+  `data/airfrans_clipped` (`scripts/airfrans/io.py::resolve_data_dir`).
   `data/` is gitignored.
+- **Memory:** stream samples one at a time via `io.iter_samples` /
+  `RawSampleReader`, which keeps one shard open (`pre_buffer=False`). Never
+  hold several `pq.ParquetFile`s open: each retains its shard's read buffers,
+  which crashed the 8 GB WSL machine. Peak RSS is ~1.8 GB.
 - Samples are pickled PLAID sample dicts. They deserialise **only** with
   `pyplaid==0.1.7` (0.1.8+ and 1.x reject the schema); PLAID's PyPI name is
   `pyplaid` (not `plaid` / `plaid-lib`, which are unrelated packages). The
   single `pickle.loads` call lives in `scripts/airfrans/io.py::deserialise`
   — the one sanctioned exception to "no pickle".
 - Per-sample scalars: `angle_of_attack` (**radians**), `inlet_velocity`
-  (m/s), `C_L`, `C_D`. No original simulation name is stored; `sample_id` is
-  the row index in `all_samples`.
+  (m/s), `C_L`, `C_D`. Nodal fields: `p` (kinematic, relative to the far
+  field), `Ux`, `Uy`, `nut`, `implicit_distance`. **No wall shear stress is
+  stored**; `scripts/airfrans/surface.py` computes it (P1 gradients
+  area-averaged onto wall nodes, τ = 2ν·dev(S)·n with the paper's
+  ν = 1.56×10⁻⁵). No original simulation name is stored; `sample_id` is the
+  row index in `all_samples`.
 - Re = U∞·c/ν with c = 1 m and ν(298.15 K) = 1.5498×10⁻⁵ m²/s from AirfRANS'
   polynomial. AirfRANS' own nominal Re is ~0.6% lower (they effectively use
   ν ≈ 1.56×10⁻⁵); this is a constant factor and does not affect models.
@@ -113,11 +128,12 @@ conda activate ...       # no conda/micromamba in this project
 | Stage | Script | Output |
 |---|---|---|
 | Inspect (Gate 2) | `scripts/airfrans/inspect_dataset.py` | `results/airfrans_inspection.md` |
-| Ingest (Gate 3) | `scripts/20_ingest_airfrans.py` | `results/airfrans_dataset.csv`, `results/airfrans_surfaces.npz` |
+| Ingest (Gate 3) | `scripts/20_ingest_airfrans.py` | `results/airfrans_dataset.csv`, `results/airfrans_surfaces.npz`, `results/airfrans_wall_curves.npz`, `results/airfrans_wall_native.npz` (gitignored) |
 | QA (Gate 4) | `scripts/21_qa_airfrans.py` | `results/airfrans_qa_flags.csv`, `results/airfrans_qa.md` |
 | Splits | `scripts/22_make_splits.py` | `splits/airfrans_{task}_{train,test}_idx.npy` |
-| Train (Gate 6) | `scripts/09_train_surrogates.py --task all` | `models/{task}/` |
-| Evaluate | `scripts/10_global_validation.py` | `results/airfrans_metrics.csv`, `results/airfrans_benchmark.md` |
+| Wall gate | `scripts/23_surface_gate.py` | `results/airfrans_surface_gate.{md,json}` |
+| Train (Gate 6) | `scripts/09_train_surrogates.py --task all [--outputs coeffs\|curves\|all]` | `models/{task}/`, `models/{task}/curves/` |
+| Evaluate | `scripts/10_global_validation.py` | `results/airfrans_metrics.csv`, `results/airfrans_curve_metrics.csv`, `results/airfrans_benchmark.md` |
 | Query | `scripts/predict.py`, `scripts/11_sweep_curves.py`, `app.py` | — |
 
 Model inputs (`scripts/surrogate/data.py::FEATURES`), standardised with a
@@ -136,6 +152,12 @@ X = [alpha_deg, log10_Re, t_max, x_tmax, m_max, x_m]      # shape (N, 6)
   sections.
 - Targets: `Cl` and `log(Cd)`; Cd predictions are back-transformed with
   `exp`. Metrics are always reported on Cd, not log Cd.
+- Curve targets: `Cp` and `Cf` on 101 cosine-spaced x/c stations per surface
+  (upper then lower = 202 values), from `surface.curves()`. Cp = p/q∞; Cf =
+  τ·t/q∞ with t pointing LE → TE along each surface, so Cf < 0 is reversed
+  flow. The ingest also stores `Cl_int_{p,tau}` / `Cd_int_{p,tau}`: C_L and
+  C_D re-integrated from the wall, which the wall gate checks against the
+  stored values.
 
 ## 5. Data Integrity and Split Rules
 
@@ -220,6 +242,15 @@ log.error("Gate 4 failed: 3.1% of rows fail hard checks")
   - **MLP**: `(128, 128, 64)`, `early_stopping=True`, wrapped in
     `TransformedTargetRegressor(StandardScaler)`; patience and L2 by CV.
   - **KRG**: SMT `KRG`, anisotropic θ, `eval_noise=True`.
+- **Curves** (`scripts/surrogate/curves.py`): one PCA per quantity, fitted on
+  train rows only, with the mode count chosen by 5-fold CV reconstruction
+  (capped at 20). GP/KRG fit one model per mode (σ per mode → ±2σ band,
+  independent modes); RF/MLP fit one multi-output model. Cf curves are
+  trained only if `airfrans_surface_gate.json` has `cf_pass`. Saved to
+  `models/{task}/curves/{pca,family}_{Cp,Cf}.joblib` + `train_pred.npz`,
+  with `curve_info` in `envelope.json`. For `full`, only PCA, GP and MLP
+  curve models are committed; KRG (354 MB/quantity) and RF (86 MB) are
+  gitignored.
 - Persist with `joblib.dump(..., compress=3)` to
   `models/{task}/{family}_{Cl,Cd}.joblib`, plus `preprocessor.joblib`,
   `envelope.json` (train feature ranges, package versions, fit metadata) and
@@ -231,20 +262,36 @@ log.error("Gate 4 failed: 3.1% of rows fail hard checks")
   `{Cl, Cd, L_over_D, Cl_std, Cd_std, in_envelope, warnings}`.
   Out-of-envelope queries return a prediction **with a warning**, never
   silently and never refused. σ is reported for GP and KRG only.
+  `predict_surface(alpha_deg, Re, naca, family, task)` returns the long
+  Cp/Cf table (`surface`, `x_c`, `Cp`, `Cf`, `_lo`/`_hi` for GP/KRG);
+  `has_curve_models(family, task)` says whether a family's curve models
+  exist locally.
 - Report R², RMSE, MAE, Spearman ρ and the paper's relative error
   `|(true − pred)/true|` (mean **and** median — the mean blows up for Cl
   near zero). The paper's `mean_score_force` is a raw ratio, not a
   percentage.
+- Curve metrics: RMSE, station-mean R², ±2σ coverage, suction-peak MAE,
+  separation detection and x/c error, the paper's `mean_rel_p` /
+  `mean_rel_wss` on native wall nodes, and C_L/C_D integrated from the
+  predicted curves.
 - Envelope and limitations to keep in docs: Re 2–6×10⁶, α −5° to 15°, NACA
   4/5-digit only; fully turbulent SST (no transition; Cd biased high vs
   experiment at lower Re); steady RANS near stall (α > ~12°) least reliable;
-  accuracy bounded by AirfRANS' own CFD.
+  accuracy bounded by AirfRANS' own CFD; the computed τ_w runs ~2.5% high
+  against AirfRANS' C_D; curve-integrated drag is unreliable.
 
 ## 8. Tests and Gates
 
 `uv run pytest` must pass. It covers geometry (analytic recovery, mesh-like
-resampling), the Gate 3 dataset schema, Gate 6 model reloads, every CLI
-family, and a headless run of the Streamlit app.
+resampling), wall physics (exact P1 shear, force integration, Cf sign), the
+Gate 3 dataset and wall-curve schema, Gate 6 reloads of Cl/Cd and curve
+models, every CLI family (including `--surface`), and a headless run of the
+Streamlit app.
+
+The wall gate (`23_surface_gate.py`, decision D4) passes when the median
+relative error is ≤ 2% (C_L) / 5% (C_D) and at most 5% of samples exceed 3×
+those limits. Cp needs the pressure-only C_L check; Cf needs the full C_D
+check. If Cf fails, ship Cp only.
 
 ---
 
@@ -255,6 +302,9 @@ family, and a headless run of the Streamlit app.
 | Edit, drop or fabricate dataset rows | Flag in `airfrans_qa_flags.csv`; filter at split time |
 | Touch test indices outside `10_global_validation.py` | 5-fold CV on train rows |
 | Compute query geometry features ad hoc | `naca_coordinates` + `section_features` |
+| Integrate predicted Cp/Cf for drag | Use the scalar C_D model |
+| Open every parquet shard at once | `io.iter_samples` (one shard at a time) |
+| Commit KRG / RF curve models | They are gitignored; retrain locally |
 | Download data from code | Read the local copy; tell the user the download command |
 | Upgrade `pyplaid` past 0.1.7 | It cannot read this dataset |
 | Bump scikit-learn / smt without retraining | Retrain all tasks, then update the pins |
@@ -276,10 +326,12 @@ uv run python scripts/airfrans/inspect_dataset.py
 uv run python scripts/20_ingest_airfrans.py
 uv run python scripts/21_qa_airfrans.py
 uv run python scripts/22_make_splits.py
-uv run python scripts/09_train_surrogates.py --task all
+uv run python scripts/23_surface_gate.py
+uv run python scripts/09_train_surrogates.py --task all            # --outputs coeffs|curves|all
 uv run python scripts/10_global_validation.py
 
 uv run python scripts/predict.py --alpha 4 --re 3e6 --naca 2412 --family all
+uv run python scripts/predict.py --alpha 4 --re 3e6 --naca 2412 --surface
 uv run python scripts/11_sweep_curves.py --naca 23012 --re 4e6
 uv run streamlit run app.py
 uv run pytest

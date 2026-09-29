@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 DATASET = PROJECT_ROOT / "results" / "airfrans_dataset.csv"
 SURFACES = PROJECT_ROOT / "results" / "airfrans_surfaces.npz"
+WALL_CURVES = PROJECT_ROOT / "results" / "airfrans_wall_curves.npz"
 
 pytestmark = pytest.mark.skipif(not DATASET.exists(), reason="run scripts/20_ingest_airfrans.py first")
 
@@ -56,3 +57,20 @@ def test_surfaces_match_dataset(df):
     assert s["y_upper"].shape == (len(df), 101) == s["y_lower"].shape
     t = s["y_upper"] - s["y_lower"]
     assert np.allclose(t.max(axis=1), df.t_max, atol=2e-3)
+
+
+def test_wall_curves_match_dataset(df):
+    c = np.load(WALL_CURVES)
+    assert (c["sample_id"] == df.sample_id.to_numpy()).all()
+    for key in _ingest_module().CURVE_KEYS:
+        assert c[key].shape == (len(df), 101), key
+        assert np.isfinite(c[key]).all(), key
+    # stagnation: Cp peaks near 1 on every sample (p is relative to the far field)
+    cp_max = np.maximum(c["Cp_upper"].max(axis=1), c["Cp_lower"].max(axis=1))
+    assert (np.abs(cp_max - 1) < 0.1).all()
+
+
+def test_pressure_lift_matches_stored_cl(df):
+    # Cp alone must reproduce C_L closely; the full gate is scripts/23_surface_gate.py
+    cl_int = df.Cl_int_p + df.Cl_int_tau
+    assert np.median(np.abs(cl_int - df.Cl)) < 5e-3

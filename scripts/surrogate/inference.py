@@ -19,7 +19,8 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from scripts.airfrans.geometry import naca_coordinates, parse_naca, section_features
+from scripts.airfrans.geometry import cosine_grid, naca_coordinates, parse_naca, section_features
+from scripts.surrogate.curves import predict_curves, split_sides
 from scripts.surrogate.data import FEATURES, MODELS_DIR, TASKS
 from scripts.surrogate.models import FAMILIES, predict as model_predict
 
@@ -43,6 +44,23 @@ def naca_features(naca: str) -> dict:
 @lru_cache(maxsize=None)
 def _load(task: str, name: str):
     return joblib.load(MODELS_DIR / task / f"{name}.joblib")
+
+
+@lru_cache(maxsize=None)
+def _load_curve(task: str, name: str):
+    return joblib.load(MODELS_DIR / task / "curves" / f"{name}.joblib")
+
+
+def curve_quantities(task: str = "full") -> list[str]:
+    """Curve quantities with trained models for this task (Cp, and Cf if it passed the wall-data gate)."""
+    return list(load_envelope(task).get("curve_info", {}))
+
+
+def has_curve_models(family: str, task: str = "full") -> bool:
+    """Whether this family's curve models exist locally (git ships only GP and MLP curves for full)."""
+    quantities = curve_quantities(task)
+    return bool(quantities) and all((MODELS_DIR / task / "curves" / f"{family}_{q}.joblib").exists()
+                                    for q in quantities)
 
 
 @lru_cache(maxsize=None)
@@ -139,3 +157,37 @@ def predict(alpha_deg: float, Re: float, naca: str, family: str = "gp", task: st
 
 def predict_all(alpha_deg: float, Re: float, naca: str, task: str = "full") -> dict[str, dict]:
     return {family: predict(alpha_deg, Re, naca, family, task) for family in FAMILIES}
+
+
+def predict_surface(alpha_deg: float, Re: float, naca: str, family: str = "gp",
+                    task: str = "full") -> pd.DataFrame:
+    """Wall Cp(x/c) and Cf(x/c) at one (α, Re, section).
+
+    Long format, one row per station: surface ("upper"/"lower"), x_c, Cp, Cf,
+    and for GP/KRG also Cp_lo/Cp_hi and Cf_lo/Cf_hi (±2σ, modes treated as
+    independent). Cf is signed along the surface from LE to TE (Cf < 0:
+    reversed flow) and is absent if it failed the wall-data gate. Attribute
+    `warnings` lists envelope issues, as for predict_curve.
+    """
+    _check(task, family)
+    if not has_curve_models(family, task):
+        raise FileNotFoundError(
+            f"no {family.upper()} curve models under {MODELS_DIR / task / 'curves'} (git ships GP and "
+            f"MLP curves only); run scripts/09_train_surrogates.py --task {task} --outputs curves")
+    X_df = feature_frame([alpha_deg], Re, naca)
+    X = _load(task, "preprocessor").transform(X_df)
+    parts: dict[str, pd.DataFrame] = {}
+    for q in curve_quantities(task):
+        mean, std = predict_curves(_load_curve(task, f"pca_{q}"), _load_curve(task, f"{family}_{q}"),
+                                   family, X, return_std=True)
+        for side, values in split_sides(mean).items():
+            frame = parts.setdefault(side, pd.DataFrame({"surface": side}, index=range(values.shape[1])))
+            frame[q] = values[0]
+            if std is not None:
+                sd = split_sides(std)[side][0]
+                frame[f"{q}_lo"], frame[f"{q}_hi"] = values[0] - 2 * sd, values[0] + 2 * sd
+    grid = cosine_grid(len(parts["upper"]))    # the ingestion grid (airfrans_wall_curves.npz x_grid)
+    out = pd.concat([f.assign(x_c=grid) for f in parts.values()], ignore_index=True)
+    out = out[["surface", "x_c", *[c for c in out.columns if c not in ("surface", "x_c")]]]
+    out.attrs["warnings"] = envelope_warnings(X_df, Re, parse_naca(naca)["code"], task)
+    return out

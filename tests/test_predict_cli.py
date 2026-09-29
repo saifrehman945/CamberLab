@@ -65,3 +65,42 @@ def test_uncertainty_only_for_gp_and_krg():
 def test_symmetric_section_near_zero_lift_at_zero_alpha():
     from scripts.surrogate.inference import predict
     assert abs(predict(0.0, 4e6, "0012", "gp")["Cl"]) < 0.02
+
+
+HAS_CURVES = (PROJECT_ROOT / "models" / "full" / "curves").exists()
+CURVE_FAMILIES = [f for f in FAMILIES
+                  if all((PROJECT_ROOT / "models" / "full" / "curves" / f"{f}_{q}.joblib").exists()
+                         for q in ("Cp",))]
+
+
+@pytest.mark.skipif(not HAS_CURVES, reason="run scripts/09_train_surrogates.py --outputs curves first")
+@pytest.mark.parametrize("family", CURVE_FAMILIES)
+def test_surface_every_family(family, tmp_path, capsys):
+    csv = tmp_path / "surface.csv"
+    rc = _cli().main(["--alpha", "4", "--re", "3e6", "--naca", "2412", "--family", family,
+                      "--surface-csv", str(csv), "--json"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    s = out["surface"][family]
+    # attached, cambered section at 4°: suction peak on the upper surface near the nose
+    assert s["summary"]["surface_Cp_min"] == "upper"
+    assert s["summary"]["x_c_Cp_min"] < 0.1
+    assert -2.5 < s["summary"]["Cp_min"] < -0.5
+    assert len(s["curves"]["x_c"]) == 202
+    assert csv.exists()
+
+
+@pytest.mark.skipif(not HAS_CURVES, reason="run scripts/09_train_surrogates.py --outputs curves first")
+def test_surface_bands_only_for_gp_and_krg():
+    from scripts.surrogate.inference import predict_surface
+    for family in CURVE_FAMILIES:
+        c = predict_surface(4.0, 3e6, "0012", family)
+        assert ("Cp_lo" in c) == (family in {"gp", "krg"})
+        assert np.isfinite(c.Cp).all()
+
+
+@pytest.mark.skipif(not HAS_CURVES, reason="run scripts/09_train_surrogates.py --outputs curves first")
+def test_surface_missing_family_is_a_clean_error(monkeypatch):
+    from scripts.surrogate import inference
+    monkeypatch.setattr(inference, "has_curve_models", lambda family, task="full": False)
+    assert _cli().main(["--alpha", "4", "--re", "3e6", "--naca", "2412", "--surface"]) == 2

@@ -1,0 +1,50 @@
+{
+  "cp_pass": true,
+  "cf_pass": true,
+  "n_samples": 1000,
+  "median_shear_fraction_of_Cd": 0.6781882171096609,
+  "stats": {
+    "Cl_pressure_only": {
+      "median_rel": 0.0001989280460598439,
+      "mean_rel": 0.00044992846737207186,
+      "p95_rel": 0.0017431441496368375,
+      "median_abs": 0.00011761984999997255,
+      "tail_fraction": 0.0,
+      "limit": 0.02,
+      "tail_limit": 0.06,
+      "pass": true
+    },
+    "Cl": {
+      "median_rel": 7.111838298344321e-06,
+      "mean_rel": 1.3910721311466625e-05,
+      "p95_rel": 3.481000671360871e-05,
+      "median_abs": 3.272896257955349e-06,
+      "tail_fraction": 0.0,
+      "limit": 0.02,
+      "tail_limit": 0.06,
+      "pass": true
+    },
+    "Cd": {
+      "median_rel": 0.016621871827589323,
+      "mean_rel": 0.015491512112625989,
+      "p95_rel": 0.024113623667809475,
+      "median_abs": 0.00017078393700000003,
+      "tail_fraction": 0.0,
+      "limit": 0.05,
+      "tail_limit": 0.15000000000000002,
+      "pass": true
+    }
+  },
+  "worst_Cd_samples": [
+    987,
+    770,
+    975,
+    897,
+    970,
+    981,
+    921,
+    919,
+    684,
+    691
+  ]
+}

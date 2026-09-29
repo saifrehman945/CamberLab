@@ -1,15 +1,18 @@
 """
 Module: scripts/airfrans/io.py
-Purpose: Read the locally downloaded PLAID-datasets/AirfRANS_remeshed dataset
-         (Hugging Face parquet shards of pickled PLAID samples) and its card.
+Purpose: Read a locally downloaded PLAID AirfRANS dataset (Hugging Face
+         parquet shards of pickled PLAID samples) and its card.
 
-The data is never downloaded from here. The user fetches it once with
+The default is PLAID-datasets/AirfRANS_clipped, which keeps the original
+wall-resolved mesh. The reader is variant-agnostic: AirfRANS_remeshed, with
+the same samples, scalars, fields and splits, also resolves. The data is never
+downloaded from here. The user fetches it once with
 
-    huggingface-cli download PLAID-datasets/AirfRANS_remeshed \
-        --repo-type dataset --local-dir data/airfrans_remeshed
+    huggingface-cli download PLAID-datasets/AirfRANS_clipped \
+        --repo-type dataset --local-dir data/airfrans_clipped
 
 and every script resolves the location as --data-dir > $AIRFRANS_DIR >
-data/airfrans_remeshed.
+data/airfrans_clipped.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import pickle
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,9 +31,9 @@ import yaml
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "airfrans_remeshed"
-EXPECTED_SHARDS = 3
+DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "airfrans_clipped"
 EXPECTED_SAMPLES = 1000
+FLOW_FIELDS = ("p", "Ux", "Uy", "nut")   # kinematic pressure (m²/s²), velocity, eddy viscosity
 
 # Scalar names as published in the dataset card (in_/out_scalars_names).
 SCALAR_AOA = "angle_of_attack"       # radians (verified in Phase 2)
@@ -55,7 +59,7 @@ def reynolds(U_inf: np.ndarray | float) -> np.ndarray | float:
 
 
 def resolve_data_dir(cli_value: str | Path | None = None) -> Path:
-    """--data-dir > $AIRFRANS_DIR > data/airfrans_remeshed; fail loudly if incomplete."""
+    """--data-dir > $AIRFRANS_DIR > data/airfrans_clipped; fail loudly if incomplete."""
     if cli_value:
         data_dir = Path(cli_value)
     elif os.environ.get("AIRFRANS_DIR"):
@@ -64,9 +68,10 @@ def resolve_data_dir(cli_value: str | Path | None = None) -> Path:
         data_dir = DEFAULT_DATA_DIR
     data_dir = data_dir.resolve()
     shards = shard_paths(data_dir)
-    if len(shards) != EXPECTED_SHARDS:
+    expected = expected_shards(shards)
+    if not shards or len(shards) != expected:
         raise FileNotFoundError(
-            f"Expected {EXPECTED_SHARDS} parquet shards under {data_dir}/data, found "
+            f"Expected {expected or 'some'} parquet shards under {data_dir}/data, found "
             f"{len(shards)}. Download the dataset first (see scripts/airfrans/io.py)."
         )
     return data_dir
@@ -74,6 +79,12 @@ def resolve_data_dir(cli_value: str | Path | None = None) -> Path:
 
 def shard_paths(data_dir: Path) -> list[Path]:
     return sorted((data_dir / "data").glob("all_samples-*.parquet"))
+
+
+def expected_shards(shards: list[Path]) -> int:
+    """Shard count declared in the file names (all_samples-00000-of-00072.parquet -> 72)."""
+    totals = {int(m.group(1)) for p in shards if (m := re.search(r"-of-(\d+)\.parquet$", p.name))}
+    return totals.pop() if len(totals) == 1 else 0
 
 
 def load_card(data_dir: Path) -> dict:
@@ -90,24 +101,49 @@ def load_splits(data_dir: Path) -> dict[str, np.ndarray]:
 
 
 class RawSampleReader:
-    """Random access to the pickled sample bytes across all shards, in row order."""
+    """Random access to the pickled sample bytes across all shards, in row order.
+
+    Memory stays bounded to one row group: the row-group index is built from
+    shard metadata only, and at most one shard is open at a time. An open
+    ParquetFile owns Arrow's read buffers (not the table it returns), so
+    keeping every shard open retains each visited shard's bytes — enough to
+    exhaust RAM on the 36 GB clipped variant. Shards are opened with
+    pre_buffer=False and closed when the reader moves to another shard.
+    """
 
     def __init__(self, data_dir: Path):
-        self._files = [pq.ParquetFile(p) for p in shard_paths(data_dir)]
+        self._paths = shard_paths(data_dir)
         # (file index, row group index, first global row of the group, n rows)
         self._groups: list[tuple[int, int, int, int]] = []
         start = 0
-        for fi, pf in enumerate(self._files):
-            for gi in range(pf.metadata.num_row_groups):
-                n = pf.metadata.row_group(gi).num_rows
+        for fi, path in enumerate(self._paths):
+            meta = pq.read_metadata(path)
+            for gi in range(meta.num_row_groups):
+                n = meta.row_group(gi).num_rows
                 self._groups.append((fi, gi, start, n))
                 start += n
         self.n_samples = start
+        self._open_fi: int | None = None
+        self._open_file: pq.ParquetFile | None = None
         self._cache_key: tuple[int, int] | None = None
         self._cache_col = None
 
     def __len__(self) -> int:
         return self.n_samples
+
+    def _file(self, fi: int) -> pq.ParquetFile:
+        if self._open_fi != fi:
+            self.close()
+            self._open_file = pq.ParquetFile(self._paths[fi], pre_buffer=False)
+            self._open_fi = fi
+        return self._open_file
+
+    def close(self) -> None:
+        """Release the open shard and the cached row group."""
+        self._cache_col, self._cache_key = None, None
+        if self._open_file is not None:
+            self._open_file.close()
+        self._open_file, self._open_fi = None, None
 
     def raw_bytes(self, i: int) -> bytes:
         if not 0 <= i < self.n_samples:
@@ -115,7 +151,8 @@ class RawSampleReader:
         for fi, gi, start, n in self._groups:
             if start <= i < start + n:
                 if self._cache_key != (fi, gi):
-                    table = self._files[fi].read_row_group(gi, columns=["sample"])
+                    self._cache_col = None      # drop the old row group before reading the next
+                    table = self._file(fi).read_row_group(gi, columns=["sample"])
                     self._cache_col = table.column("sample")
                     self._cache_key = (fi, gi)
                 return self._cache_col[i - start].as_py()
@@ -145,22 +182,28 @@ class SampleData:
     y: np.ndarray
     triangles: np.ndarray         # (n_tri, 3) zero-based node indices
     implicit_distance: np.ndarray  # per-node signed distance to the aerofoil
+    fields: dict[str, np.ndarray] | None = None   # FLOW_FIELDS, only when requested
 
 
-def extract(sample, index: int) -> SampleData:
-    """Pull scalars, nodes, triangles and wall distance out of a plaid Sample."""
+def extract(sample, index: int, flow: bool = False) -> SampleData:
+    """Pull scalars, nodes, triangles and wall distance (and, with flow, FLOW_FIELDS) out of a plaid Sample."""
     scalars = {str(k): float(sample.get_scalar(k)) for k in sample.get_scalar_names()}
     nodes = np.asarray(sample.get_nodes(), dtype=np.float64)
     elements = sample.get_elements()
     tri_key = next(k for k in elements if "TRI" in str(k).upper())
     triangles = np.asarray(elements[tri_key], dtype=np.int64).reshape(-1, 3)
     dist = np.asarray(sample.get_field("implicit_distance"), dtype=np.float64)
+    fields = ({f: np.asarray(sample.get_field(f), dtype=np.float64) for f in FLOW_FIELDS}
+              if flow else None)
     return SampleData(index=index, scalars=scalars, x=nodes[:, 0], y=nodes[:, 1],
-                      triangles=triangles, implicit_distance=dist)
+                      triangles=triangles, implicit_distance=dist, fields=fields)
 
 
-def iter_samples(data_dir: Path, indices=None):
+def iter_samples(data_dir: Path, indices=None, flow: bool = False):
     """Yield SampleData for the given row indices (default: all, in order)."""
     reader = RawSampleReader(data_dir)
-    for i in (range(len(reader)) if indices is None else indices):
-        yield extract(deserialise(reader.raw_bytes(int(i))), int(i))
+    try:
+        for i in (range(len(reader)) if indices is None else indices):
+            yield extract(deserialise(reader.raw_bytes(int(i))), int(i), flow=flow)
+    finally:
+        reader.close()
